@@ -50,7 +50,6 @@ Official docs: https://opencode.ai/docs
 | `tui.json` | TUI-specific settings |
 | `agents/` | Custom agent definitions (markdown with frontmatter) |
 | `commands/` | Custom command definitions |
-| `rules/` | Organized instruction files |
 | `tools/` | Custom tool definitions |
 | `themes/` | Custom themes |
 | `modes/` | Mode configurations |

@@ -24,7 +24,6 @@ ai-config/
             ├── commands/                 # custom commands
             ├── modes/                    # mode configurations
             ├── plugins/                  # plugins
-            ├── rules/                    # organized instruction files
             ├── skills/                   # agent skills
             ├── themes/                   # custom themes
             └── tools/                    # custom tool definitions
