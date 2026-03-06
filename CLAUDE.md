@@ -1,0 +1,77 @@
+# CLAUDE.md - ai-config
+
+This repo stores global/user-level configuration files for AI coding assistants (Claude Code and OpenCode), deployed to `$HOME` via GNU Stow.
+
+## Repo Layout
+
+Two stow packages mirror their respective `$HOME` targets:
+
+- `claude-code/` -> `~/.claude/`
+- `opencode/` -> `~/.config/opencode/`
+
+Stow commands:
+
+```bash
+cd ~/projects/ai-config
+stow -v -t ~ claude-code opencode     # install
+stow -D -v -t ~ claude-code opencode  # uninstall
+stow -v -n -t ~ claude-code opencode  # dry run
+```
+
+## Claude Code Reference
+
+Official docs: https://code.claude.com/docs/en/overview
+
+- **Memory and instructions**: https://code.claude.com/docs/en/memory
+- **Settings**: https://code.claude.com/docs/en/settings
+
+### Global config structure (`~/.claude/`)
+
+| Path | Purpose |
+|------|---------|
+| `CLAUDE.md` | User-level persistent instructions (loaded every session) |
+| `settings.json` | User-level settings (permissions, env, features) |
+| `rules/` | User-level organized instruction files (loaded before project rules) |
+| `agents/` | User-level custom agents |
+
+Best practices:
+- Keep `CLAUDE.md` under 200 lines for context window efficiency
+- Use `rules/` for topic-specific files (e.g., `testing.md`, `api-design.md`)
+- Rules support `paths:` frontmatter for file-scoped instructions
+- Use `@path/to/file` syntax in CLAUDE.md to import additional files
+
+## OpenCode Reference
+
+Official docs: https://opencode.ai/docs
+
+- **Configuration**: https://opencode.ai/docs/config
+- **Agents**: https://opencode.ai/docs/agents
+- **Rules**: https://opencode.ai/docs/rules
+
+### Global config structure (`~/.config/opencode/`)
+
+| Path | Purpose |
+|------|---------|
+| `AGENTS.md` | User-level global instructions |
+| `opencode.json` | User-level config (models, providers, permissions, tools) |
+| `tui.json` | TUI-specific settings |
+| `agents/` | Custom agent definitions (markdown with frontmatter) |
+| `commands/` | Custom command definitions |
+| `rules/` | Organized instruction files |
+| `tools/` | Custom tool definitions |
+| `themes/` | Custom themes |
+| `modes/` | Mode configurations |
+| `plugins/` | Plugin files |
+| `skills/` | Agent skills |
+
+Notes:
+- OpenCode falls back to `CLAUDE.md` if `AGENTS.md` is absent
+- Plural directory names are canonical; singular also supported for backward compatibility
+- Agent files use markdown with YAML frontmatter for config (model, tools, permissions)
+
+## Editing Guidelines
+
+- Consult official docs above before structural changes
+- Keep instruction files concise; split with `rules/` when growing large
+- Keep both tools' instruction files in sync where intent overlaps
+- Test changes by starting a new session in the respective tool
