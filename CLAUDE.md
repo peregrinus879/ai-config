@@ -22,9 +22,6 @@ stow -v -n -t ~ claude-code opencode  # dry run
 
 Official docs: https://code.claude.com/docs/en/overview
 
-- **Memory and instructions**: https://code.claude.com/docs/en/memory
-- **Settings**: https://code.claude.com/docs/en/settings
-
 ### Global config structure (`~/.claude/`)
 
 | Path | Purpose |
@@ -43,10 +40,6 @@ Best practices:
 ## OpenCode Reference
 
 Official docs: https://opencode.ai/docs
-
-- **Configuration**: https://opencode.ai/docs/config
-- **Agents**: https://opencode.ai/docs/agents
-- **Rules**: https://opencode.ai/docs/rules
 
 ### Global config structure (`~/.config/opencode/`)
 

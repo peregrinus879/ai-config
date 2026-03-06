@@ -67,11 +67,6 @@ cd ~/path/to/ai-config
 stow -v -n -t ~ claude-code opencode
 ```
 
-## Documentation
-
-- Claude Code: [Memory](https://code.claude.com/docs/en/memory), [Settings](https://code.claude.com/docs/en/settings)
-- OpenCode: [Config](https://opencode.ai/docs/config), [Agents](https://opencode.ai/docs/agents), [Rules](https://opencode.ai/docs/rules)
-
 ## License
 
 [MIT](LICENSE)
