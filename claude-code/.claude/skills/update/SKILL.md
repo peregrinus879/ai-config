@@ -1,5 +1,5 @@
 ---
-name: update-docs
+name: update
 description: After code changes, verify and update project documentation (README, APPROACH, etc.) to stay in sync with the implementation.
 ---
 
@@ -28,5 +28,5 @@ After making code changes, verify and update project documentation to reflect th
 - Present proposed changes before editing
 - Do not add, remove, or modify content beyond what the recent code changes require
 - Match existing formatting and style conventions in each file
-- Keep docs focused on user-facing information; internal details belong in `.claude/CLAUDE.md`
+- Keep docs focused on user-facing information
 - Do not create new documentation files unless explicitly requested
