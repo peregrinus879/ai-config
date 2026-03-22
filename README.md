@@ -1,4 +1,4 @@
-# ai-config
+# dotfiles-ai
 
 Global configuration files for AI coding assistants, managed with [GNU Stow](https://www.gnu.org/software/stow/).
 
@@ -10,13 +10,15 @@ Global configuration files for AI coding assistants, managed with [GNU Stow](htt
 ## Structure
 
 ```
-ai-config/
+dotfiles-ai/
 ├── claude-code/                          # stow package -> ~/.claude/
 │   └── .claude/
 │       ├── CLAUDE.md                     # global instructions
 │       ├── agents/                       # custom agents
 │       ├── rules/                        # organized instruction files
 │       └── skills/                       # custom skills (SKILL.md files)
+│           ├── commit/                   # commit conventions
+│           └── update/                   # post-change doc updates
 └── opencode/                             # stow package -> ~/.config/opencode/
     └── .config/
         └── opencode/
@@ -26,6 +28,8 @@ ai-config/
             ├── modes/                    # mode configurations
             ├── plugins/                  # plugins
             ├── skills/                   # agent skills
+            │   ├── commit/               # commit conventions
+            │   └── update/               # post-change doc updates
             ├── themes/                   # custom themes
             └── tools/                    # custom tool definitions
 ```
@@ -36,18 +40,22 @@ Machine-local paths (`projects/`, `agent-memory/`) and auto-generated config fil
 
 ### Prerequisites
 
-- [GNU Stow](https://www.gnu.org/software/stow/) (`pacman -S stow`)
+- [GNU Stow](https://www.gnu.org/software/stow/)
+
+```bash
+pacman -S --needed stow
+```
 
 ### Clone
 
 ```bash
-git clone https://github.com/peregrinus879/ai-config.git ~/path/to/ai-config
+git clone https://github.com/peregrinus879/dotfiles-ai.git ~/path/to/dotfiles-ai
 ```
 
 Or with SSH:
 
 ```bash
-git clone git@github.com:peregrinus879/ai-config.git ~/path/to/ai-config
+git clone git@github.com:peregrinus879/dotfiles-ai.git ~/path/to/dotfiles-ai
 ```
 
 ### Stow
@@ -55,14 +63,14 @@ git clone git@github.com:peregrinus879/ai-config.git ~/path/to/ai-config
 Create symlinks for all packages:
 
 ```bash
-cd ~/path/to/ai-config
+cd ~/path/to/dotfiles-ai
 stow -v -t ~ claude-code opencode
 ```
 
 ### Unstow
 
 ```bash
-cd ~/path/to/ai-config
+cd ~/path/to/dotfiles-ai
 stow -D -v -t ~ claude-code opencode
 ```
 
@@ -71,7 +79,7 @@ stow -D -v -t ~ claude-code opencode
 Preview what stow would do without making changes:
 
 ```bash
-cd ~/path/to/ai-config
+cd ~/path/to/dotfiles-ai
 stow -v -n -t ~ claude-code opencode
 ```
 

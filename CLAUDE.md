@@ -1,4 +1,4 @@
-# CLAUDE.md - ai-config
+# CLAUDE.md - dotfiles-ai
 
 This repo stores global/user-level configuration files for AI coding assistants (Claude Code and OpenCode), deployed to `$HOME` via GNU Stow.
 
@@ -12,7 +12,7 @@ Two stow packages mirror their respective `$HOME` targets:
 Stow commands:
 
 ```bash
-cd ~/path/to/ai-config
+cd ~/path/to/dotfiles-ai
 stow -v -t ~ claude-code opencode     # install
 stow -D -v -t ~ claude-code opencode  # uninstall
 stow -v -n -t ~ claude-code opencode  # dry run
