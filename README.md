@@ -26,7 +26,9 @@ dotfiles-ai/
         └── opencode/
             ├── AGENTS.md                 # global instructions
             ├── agents/                   # custom agent definitions
-            ├── commands/                 # custom commands
+            ├── commands/                 # custom slash commands
+            │   ├── commit.md             # wrapper for the commit skill
+            │   └── update.md             # wrapper for the update skill
             ├── modes/                    # mode configurations
             ├── opencode.json             # runtime config and agent overrides
             ├── plugins/                  # plugins
@@ -41,7 +43,9 @@ Tracked runtime config is limited to shared behavior, currently Claude Code `set
 
 Machine-local paths (`projects/`, `agent-memory/`), auth/session state, and generated or host-specific config files remain intentionally excluded.
 
-The built-in OpenCode `build` agent is intentionally overridden to require approval for file edits and bash commands while preserving default read behavior in the working directory.
+The built-in OpenCode `build` agent is intentionally overridden to require approval for file edits and non-read-only bash commands while allowing a narrow set of read-only shell inspections.
+
+OpenCode skills are loaded by the agent, while custom slash commands live under `commands/`; this repo includes `/commit` and `/update` wrappers that invoke the corresponding skills.
 
 ## Setup
 

@@ -5,7 +5,24 @@
     "build": {
       "permission": {
         "edit": "ask",
-        "bash": "ask"
+        "bash": {
+          "*": "ask",
+          "pwd": "allow",
+          "ls": "allow",
+          "ls *": "allow",
+          "git status": "allow",
+          "git status *": "allow",
+          "git diff": "allow",
+          "git diff *": "allow",
+          "git log": "allow",
+          "git log *": "allow",
+          "git show": "allow",
+          "git show *": "allow",
+          "git branch": "allow",
+          "git branch --show-current": "allow",
+          "git rev-parse --abbrev-ref HEAD": "allow",
+          "git rev-parse --abbrev-ref @{upstream}": "allow"
+        }
       }
     }
   }

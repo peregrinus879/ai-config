@@ -62,6 +62,7 @@ Notes:
 - OpenCode falls back to `CLAUDE.md` if `AGENTS.md` is absent
 - Plural directory names are canonical; singular also supported for backward compatibility
 - Built-in agents can be overridden in `opencode.json`; custom agents can be defined as markdown files in `agents/`
+- Skills are agent-loadable instruction packs; slash-invokable workflows belong in `commands/`
 - Prefer `permission` over legacy `tools` for new OpenCode configuration
 
 ## Editing Guidelines
