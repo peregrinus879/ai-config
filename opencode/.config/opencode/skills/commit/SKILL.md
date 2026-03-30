@@ -26,9 +26,17 @@ Co-Authored-By: <model name> <noreply@provider.com>
 - `test:` - Adding or correcting tests
 - `chore:` - Maintenance tasks
 
+## Pre-commit check
+
+Before staging, verify whether pending changes add, remove, or rename
+files referenced in project documentation (README.md, CLAUDE.md, or
+similar). If so, run /update to bring documentation in sync with the
+current state before proceeding with staging and commits.
+
 ## Staging
 
 - Stage specific files by name (`git add <file>`). Do not use `git add -A` or `git add .`.
+- When a file contains changes belonging to different logical commits, use `git add -p <file>` to stage only the relevant hunks.
 - Review staged changes (`git diff --cached`) before committing.
 - Never stage sensitive files (.env, credentials, private keys).
 
