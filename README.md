@@ -15,6 +15,7 @@ dotfiles-ai/
 │   └── .claude/
 │       ├── CLAUDE.md                     # global instructions
 │       ├── agents/                       # custom agents
+│       ├── settings.json                 # runtime settings (status line, permissions)
 │       ├── rules/                        # organized instruction files
 │       ├── skills/                       # custom skills (SKILL.md files)
 │       │   ├── commit/                   # commit conventions
@@ -27,6 +28,7 @@ dotfiles-ai/
             ├── agents/                   # custom agent definitions
             ├── commands/                 # custom commands
             ├── modes/                    # mode configurations
+            ├── opencode.json             # runtime config and agent overrides
             ├── plugins/                  # plugins
             ├── skills/                   # agent skills
             │   ├── commit/               # commit conventions
@@ -35,7 +37,11 @@ dotfiles-ai/
             └── tools/                    # custom tool definitions
 ```
 
-Machine-local paths (`projects/`, `agent-memory/`) and auto-generated config files (`settings.json`, `keybindings.json`) are intentionally excluded.
+Tracked runtime config is limited to shared behavior, currently Claude Code `settings.json` for the custom status line and OpenCode `opencode.json` for the built-in `build` agent approval policy.
+
+Machine-local paths (`projects/`, `agent-memory/`), auth/session state, and generated or host-specific config files remain intentionally excluded.
+
+The built-in OpenCode `build` agent is intentionally overridden to require approval for file edits and bash commands while preserving default read behavior in the working directory.
 
 ## Setup
 

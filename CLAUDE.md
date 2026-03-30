@@ -27,7 +27,7 @@ Official docs: https://code.claude.com/docs/en/overview
 | Path | Purpose |
 |------|---------|
 | `CLAUDE.md` | User-level persistent instructions (loaded every session) |
-| `settings.json` | User-level settings (permissions, env, features) |
+| `settings.json` | User-level runtime settings (status line, permissions, env, features) |
 | `agents/` | User-level custom agents |
 | `rules/` | User-level organized instruction files (loaded before project rules) |
 | `skills/` | User-level custom skills (SKILL.md files, on-demand workflows) |
@@ -48,7 +48,7 @@ Official docs: https://opencode.ai/docs
 | Path | Purpose |
 |------|---------|
 | `AGENTS.md` | User-level global instructions |
-| `opencode.json` | User-level config (models, providers, permissions, tools) |
+| `opencode.json` | User-level runtime config (models, providers, permissions, agent overrides) |
 | `tui.json` | TUI-specific settings |
 | `agents/` | Custom agent definitions (markdown with frontmatter) |
 | `commands/` | Custom command definitions |
@@ -61,11 +61,13 @@ Official docs: https://opencode.ai/docs
 Notes:
 - OpenCode falls back to `CLAUDE.md` if `AGENTS.md` is absent
 - Plural directory names are canonical; singular also supported for backward compatibility
-- Agent files use markdown with YAML frontmatter for config (model, tools, permissions)
+- Built-in agents can be overridden in `opencode.json`; custom agents can be defined as markdown files in `agents/`
+- Prefer `permission` over legacy `tools` for new OpenCode configuration
 
 ## Editing Guidelines
 
 - Consult official docs above before structural changes
 - Keep instruction files concise; split with `rules/` when growing large
 - Keep both tools' instruction files in sync where intent overlaps
+- Keep tracked runtime config limited to shared, portable behavior
 - Test changes by starting a new session in the respective tool
