@@ -11,12 +11,15 @@ Global configuration files for AI coding assistants, managed with [GNU Stow](htt
 
 This repo tracks user-level terminal configuration for Claude Code and OpenCode.
 
-It intentionally excludes auth and session state, machine-local files, and project-local instruction files. The goal is to keep only portable defaults that work well across machines and over SSH.
+It intentionally excludes auth and session state, machine-local files, and generated host-specific config. The repo root keeps a minimal `AGENTS.md` plus a thin `CLAUDE.md` compatibility wrapper so the repo can be maintained natively in both tools.
 
 ## Structure
 
 ```
 dotfiles-ai/
+├── AGENTS.md                             # canonical repo maintenance instructions
+├── CLAUDE.md                             # Claude wrapper importing AGENTS.md
+├── README.md                             # human-facing documentation
 ├── claude-code/                          # stow package -> ~/.claude/
 │   └── .claude/
 │       ├── CLAUDE.md                     # Claude-specific instructions
@@ -48,11 +51,22 @@ Tracked runtime config is limited to shared behavior, currently Claude Code `set
 
 Machine-local paths (`projects/`, `agent-memory/`), auth/session state, and generated or host-specific config files remain intentionally excluded.
 
+Repo-root instruction files exist only to maintain `dotfiles-ai` itself; they are not part of the stowed payload.
+
 The built-in OpenCode `build` agent is intentionally overridden to require approval for file edits and non-read-only bash commands while allowing a narrow set of read-only shell inspections.
 
 Shared guidance now lives in `claude-code/.claude/rules/shared-guidance.md`. Claude Code loads it natively from `rules/`, while OpenCode loads the same file through the `instructions` field in `opencode.json` using `$HOME`-based path expansion.
 
 This shared file reduces drift between Claude Code and OpenCode while keeping tool-specific wrappers thin.
+
+Sharing follows a simple rule in this repo:
+
+- Share policy.
+- Separate mechanism.
+
+In practice, guidance is shared when the content and meaning are the same in both tools. Tool-specific config, wrappers, and schemas stay separate.
+
+At the repo root, `AGENTS.md` is the canonical project instruction file and `CLAUDE.md` is a thin compatibility wrapper for Claude Code.
 
 OpenCode skills are loaded by the agent, while custom slash commands live under `commands/`; this repo keeps a `/commit` wrapper and folds documentation sync into the commit workflow instead of maintaining a separate `/update` command.
 
