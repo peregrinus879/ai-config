@@ -4,8 +4,14 @@ Global configuration files for AI coding assistants, managed with [GNU Stow](htt
 
 ## Supported Tools
 
-- [Claude Code](https://code.claude.com/docs/en/overview) - Anthropic's CLI for Claude
-- [OpenCode](https://opencode.ai/docs) - Open-source AI coding assistant
+- [Claude Code](https://code.claude.com/docs/en/overview) - AI-powered coding assistant with a terminal CLI
+- [OpenCode](https://opencode.ai/docs) - Open source AI coding agent with a terminal-based interface
+
+## Scope
+
+This repo tracks user-level terminal configuration for Claude Code and OpenCode.
+
+It intentionally excludes auth and session state, machine-local files, and project-local instruction files. The goal is to keep only portable defaults that work well across machines and over SSH.
 
 ## Structure
 
@@ -46,6 +52,8 @@ The built-in OpenCode `build` agent is intentionally overridden to require appro
 
 Shared guidance now lives in `claude-code/.claude/rules/shared-guidance.md`. Claude Code loads it natively from `rules/`, while OpenCode loads the same file through the `instructions` field in `opencode.json` using `$HOME`-based path expansion.
 
+This shared file reduces drift between Claude Code and OpenCode while keeping tool-specific wrappers thin.
+
 OpenCode skills are loaded by the agent, while custom slash commands live under `commands/`; this repo keeps a `/commit` wrapper and folds documentation sync into the commit workflow instead of maintaining a separate `/update` command.
 
 ## Review Workflow
@@ -61,7 +69,7 @@ Both tools support `!`-prefixed Bash commands in the interactive terminal UI.
 
 `opencode/.config/opencode/tui.json` sets `diff_style` to `stacked`, which is easier to scan in narrower SSH terminals.
 
-The current OpenCode docs site can describe TUI features from the `dev` branch before they appear in the latest stable release, so prefer your installed `/help` output over the docs when a slash command is missing.
+OpenCode docs can reflect the `dev` branch before a feature reaches the latest stable release, so prefer your installed `/help` output when docs and behavior disagree.
 
 ## Maintainer Checklist
 
@@ -89,12 +97,6 @@ sudo pacman -S --needed stow
 
 ```bash
 git clone https://github.com/peregrinus879/dotfiles-ai.git ~/path/to/dotfiles-ai
-```
-
-Or with SSH:
-
-```bash
-git clone git@github.com:peregrinus879/dotfiles-ai.git ~/path/to/dotfiles-ai
 ```
 
 ### Stow
