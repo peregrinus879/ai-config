@@ -35,7 +35,7 @@ Official docs: https://code.claude.com/docs/en/overview
 
 Best practices:
 - Keep `CLAUDE.md` under 200 lines for context window efficiency
-- Use `rules/` for topic-specific files (e.g., `testing.md`, `api-design.md`)
+- Use `rules/` for topic-specific files (e.g., `testing.md`, `api-design.md`) and shared cross-tool guidance
 - Rules support `paths:` frontmatter for file-scoped instructions
 - Use `@path/to/file` syntax in CLAUDE.md to import additional files
 
@@ -64,12 +64,13 @@ Notes:
 - Built-in agents can be overridden in `opencode.json`; custom agents can be defined as markdown files in `agents/`
 - Skills are agent-loadable instruction packs; slash-invokable workflows belong in `commands/`
 - Prefer `permission` over legacy `tools` for new OpenCode configuration
-- This repo currently tracks OpenCode `opencode.json` for the shared default model `openai/gpt-5.4`, local `ollama/gemma4:31b` provider configuration, and the built-in `build` agent permission override
+- Use the `instructions` field in `opencode.json` to reuse external rule files instead of duplicating long AGENTS content; prefer `$HOME`-based paths for shared user-level files
+- This repo currently tracks OpenCode `opencode.json` for the shared default model `openai/gpt-5.4`, local `ollama/gemma4:31b` provider configuration, the built-in `build` agent permission override, and disabled sharing; it also tracks `tui.json` for stacked diff rendering
 
 ## Editing Guidelines
 
 - Consult official docs above before structural changes
 - Keep instruction files concise; split with `rules/` when growing large
-- Keep both tools' instruction files in sync where intent overlaps
+- Keep shared guidance canonical in `claude-code/.claude/rules/shared-guidance.md` and keep tool-specific wrapper files thin
 - Keep tracked runtime config limited to shared, portable behavior
 - Test changes by starting a new session in the respective tool

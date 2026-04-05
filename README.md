@@ -13,39 +13,64 @@ Global configuration files for AI coding assistants, managed with [GNU Stow](htt
 dotfiles-ai/
 ├── claude-code/                          # stow package -> ~/.claude/
 │   └── .claude/
-│       ├── CLAUDE.md                     # global instructions
+│       ├── CLAUDE.md                     # Claude-specific instructions
 │       ├── settings.json                 # runtime settings (status line, permissions)
 │       ├── statusline.sh                 # terminal status line script
 │       ├── agents/                       # custom agents
 │       ├── rules/                        # organized instruction files
+│       │   └── shared-guidance.md        # canonical shared instructions
 │       └── skills/                       # custom skills (SKILL.md files)
-│           ├── commit/                   # commit conventions
-│           └── update/                   # post-change doc updates
+│           └── commit/                   # commit conventions and doc sync
 └── opencode/                             # stow package -> ~/.config/opencode/
     └── .config/
         └── opencode/
-            ├── AGENTS.md                 # global instructions
+            ├── AGENTS.md                 # OpenCode-specific instructions
             ├── opencode.json             # runtime config and agent overrides
+            ├── tui.json                  # TUI-specific config
             ├── agents/                   # custom agent definitions
             ├── commands/                 # custom slash commands
-            │   ├── commit.md             # wrapper for the commit skill
-            │   └── update.md             # wrapper for the update skill
+            │   └── commit.md             # wrapper for the commit skill
             ├── modes/                    # mode configurations
             ├── plugins/                  # plugins
             ├── skills/                   # agent skills
-            │   ├── commit/               # commit conventions
-            │   └── update/               # post-change doc updates
+            │   └── commit/               # commit conventions and doc sync
             ├── themes/                   # custom themes
             └── tools/                    # custom tool definitions
 ```
 
-Tracked runtime config is limited to shared behavior, currently Claude Code `settings.json` for the custom status line and OpenCode `opencode.json` for the shared default model `openai/gpt-5.4`, local `ollama/gemma4:31b` provider definition, and built-in `build` agent approval policy.
+Tracked runtime config is limited to shared behavior, currently Claude Code `settings.json` for the custom status line, OpenCode `opencode.json` for the shared default model `openai/gpt-5.4`, local `ollama/gemma4:31b` provider definition, built-in `build` agent approval policy, and disabled conversation sharing, plus OpenCode `tui.json` for a stacked diff view that works better over SSH.
 
 Machine-local paths (`projects/`, `agent-memory/`), auth/session state, and generated or host-specific config files remain intentionally excluded.
 
 The built-in OpenCode `build` agent is intentionally overridden to require approval for file edits and non-read-only bash commands while allowing a narrow set of read-only shell inspections.
 
-OpenCode skills are loaded by the agent, while custom slash commands live under `commands/`; this repo includes `/commit` and `/update` wrappers that invoke the corresponding skills.
+Shared guidance now lives in `claude-code/.claude/rules/shared-guidance.md`. Claude Code loads it natively from `rules/`, while OpenCode loads the same file through the `instructions` field in `opencode.json` using `$HOME`-based path expansion.
+
+OpenCode skills are loaded by the agent, while custom slash commands live under `commands/`; this repo keeps a `/commit` wrapper and folds documentation sync into the commit workflow instead of maintaining a separate `/update` command.
+
+## OpenCode Review Workflow
+
+For multi-file review in OpenCode, use the built-in tool details plus Git diffs:
+
+1. Run `/details` or press `ctrl+x d` to show tool execution details.
+2. Run `!git status --short` to see touched files.
+3. Run `!git diff --stat` for a compact overview.
+4. Run `!git diff` to review the full patch.
+5. Run `!git diff -- path/to/file` to isolate one file.
+
+`opencode/.config/opencode/tui.json` sets `diff_style` to `stacked`, which is easier to scan in narrower SSH terminals.
+
+## Maintainer Checklist
+
+When updating this repo for new Claude Code or OpenCode releases:
+
+1. Review the current Claude Code docs for overview, settings, memory, skills, and hooks.
+2. Review the current OpenCode docs for config, rules, permissions, agents, skills, TUI, and sharing.
+3. Run `opencode debug config` and confirm the resolved config still matches the tracked intent.
+4. Start a fresh session in both tools and verify the shared guidance file is loaded.
+5. Verify Claude Code status line behavior still matches `claude-code/.claude/settings.json` and `statusline.sh`.
+6. Verify OpenCode diff review remains usable over SSH and that sharing stays disabled unless intentionally changed.
+7. Verify `/commit` still performs documentation sync before staging when docs are affected.
 
 ## Setup
 

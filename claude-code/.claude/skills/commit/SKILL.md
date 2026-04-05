@@ -30,8 +30,15 @@ Co-Authored-By: Claude <current model> <noreply@anthropic.com>
 
 Before staging, verify whether pending changes add, remove, or rename
 files referenced in project documentation (README.md, CLAUDE.md, or
-similar). If so, run /update to bring documentation in sync with the
-current state before proceeding with staging and commits.
+similar). If so, update the affected existing documentation before
+proceeding with staging and commits.
+
+When syncing docs for the current change:
+
+- Identify the existing documentation files affected by the pending changes.
+- Compare documented commands, paths, workflows, and file listings against the current repo state.
+- Update only what the current change requires; do not expand scope.
+- Do not create new documentation files unless explicitly requested.
 
 ## Staging
 
