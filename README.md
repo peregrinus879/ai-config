@@ -48,17 +48,20 @@ Shared guidance now lives in `claude-code/.claude/rules/shared-guidance.md`. Cla
 
 OpenCode skills are loaded by the agent, while custom slash commands live under `commands/`; this repo keeps a `/commit` wrapper and folds documentation sync into the commit workflow instead of maintaining a separate `/update` command.
 
-## OpenCode Review Workflow
+## Review Workflow
 
-For multi-file review in OpenCode, use the built-in tool details plus Git diffs:
+For multi-file review in Claude Code or OpenCode, use Bash mode with Git diffs:
 
-1. Run `/details` or press `ctrl+x d` to show tool execution details.
-2. Run `!git status --short` to see touched files.
-3. Run `!git diff --stat` for a compact overview.
-4. Run `!git diff` to review the full patch.
-5. Run `!git diff -- path/to/file` to isolate one file.
+1. Run `!git status --short` to see touched files.
+2. Run `!git diff --stat` for a compact overview.
+3. Run `!git diff` to review the full patch.
+4. Run `!git diff -- path/to/file` to isolate one file.
+
+Both tools support `!`-prefixed Bash commands in the interactive terminal UI.
 
 `opencode/.config/opencode/tui.json` sets `diff_style` to `stacked`, which is easier to scan in narrower SSH terminals.
+
+The current OpenCode docs site can describe TUI features from the `dev` branch before they appear in the latest stable release, so prefer your installed `/help` output over the docs when a slash command is missing.
 
 ## Maintainer Checklist
 
