@@ -8,4 +8,4 @@ Priority: session instructions > {project-root}/.claude/CLAUDE.md > ~/.claude/CL
 
 - Shared user guidance lives in `~/.claude/rules/shared-guidance.md`.
 - Primary tool: Claude Code.
-- Co-Author: Append `Co-Authored-By: Claude <current model> <noreply@anthropic.com>`.
+- Co-Author: Append `Co-Authored-By: Claude {current model} <noreply@anthropic.com>`.

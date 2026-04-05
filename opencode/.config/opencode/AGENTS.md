@@ -8,5 +8,5 @@ Priority: session instructions > {project-root}/AGENTS.md > ~/.config/opencode/A
 
 - Shared user guidance is loaded from `~/.claude/rules/shared-guidance.md` via `opencode.json` `instructions`.
 - Primary tool: OpenCode.
-- Co-Author: Append `Co-Authored-By: <model name> <noreply@provider.com>`.
+- Co-Author: Append `Co-Authored-By: {provider} {current model} <noreply@provider.com>`.
 - Sharing is disabled in tracked config unless the user explicitly asks to re-enable it.

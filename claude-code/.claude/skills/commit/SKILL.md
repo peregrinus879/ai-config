@@ -13,7 +13,7 @@ disable-model-invocation: true
 
 [optional body]
 
-Co-Authored-By: Claude <current model> <noreply@anthropic.com>
+Co-Authored-By: Claude {current model} <noreply@anthropic.com>
 ```
 
 ## Types
@@ -53,7 +53,7 @@ When syncing docs for the current change:
 - Separate commits by type
 - Subject: imperative mood, concise (50 chars), lowercase
 - Body: when the change needs context (explain why, not what)
-- Co-Author: always append with current model name
+- Co-Author: always append with current model
 - Push: user handles manually (SSH passphrase required). Do not push.
 - After committing, get the current branch with `git branch --show-current`, then check for an upstream tracking branch with `git rev-parse --abbrev-ref @{upstream} 2>/dev/null`, and show the appropriate push command:
   - Has upstream: `git push`
