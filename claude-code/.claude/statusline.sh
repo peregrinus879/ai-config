@@ -4,16 +4,21 @@
 
 input=$(cat)
 
-# --- Parse JSON input ---
-cwd=$(echo "$input" | jq -r '.workspace.current_dir // .cwd // ""')
-model=$(echo "$input" | jq -r '.model.display_name // ""')
-used_pct=$(echo "$input" | jq -r '.context_window.used_percentage // empty')
-ctx_size=$(echo "$input" | jq -r '.context_window.context_window_size // 0')
-rate_5h=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty')
-rate_7d=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empty')
-cost_usd=$(echo "$input" | jq -r '.cost.total_cost_usd // empty')
-reset_5h=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // empty')
-reset_7d=$(echo "$input" | jq -r '.rate_limits.seven_day.resets_at // empty')
+# --- Parse JSON input (single jq call for performance) ---
+readarray -t _f <<< "$(echo "$input" | jq -r '
+  (.workspace.current_dir // .cwd // ""),
+  (.model.display_name // ""),
+  (.context_window.used_percentage // ""),
+  (.context_window.context_window_size // 0),
+  (.rate_limits.five_hour.used_percentage // ""),
+  (.rate_limits.seven_day.used_percentage // ""),
+  (.cost.total_cost_usd // ""),
+  (.rate_limits.five_hour.resets_at // ""),
+  (.rate_limits.seven_day.resets_at // "")
+')"
+cwd="${_f[0]}" model="${_f[1]}" used_pct="${_f[2]}" ctx_size="${_f[3]}"
+rate_5h="${_f[4]}" rate_7d="${_f[5]}" cost_usd="${_f[6]}"
+reset_5h="${_f[7]}" reset_7d="${_f[8]}"
 
 # effortLevel is not in the statusline JSON schema;
 # read directly from settings.json as a workaround.
@@ -21,11 +26,12 @@ effort=$(jq -r '.effortLevel // empty' ~/.claude/settings.json 2>/dev/null)
 
 # --- ANSI colors ---
 dim='\033[2m'
-cyan='\033[36m'
+bold_cyan='\033[1;36m'
+italic_cyan='\033[3;36m'
 yellow='\033[33m'
+bold_yellow='\033[1;33m'
 green='\033[32m'
 red='\033[31m'
-magenta='\033[35m'
 reset='\033[0m'
 
 # --- Helpers ---
@@ -77,18 +83,42 @@ git_cache_stale() {
 
 # --- Segments ---
 
-# 1. Directory (shorten $HOME to ~)
-short_cwd="${cwd/#$HOME/\~}"
+# 1. SSH hostname (shown only for remote sessions)
+host_seg=""
+if [ -n "$SSH_CONNECTION" ]; then
+  host_seg="${bold_yellow}${HOSTNAME%%.*}${reset}  "
+fi
 
-# 2. Git branch (cached, refreshed every 5s)
+# 2. Directory + Git branch (cached, refreshed every 5s)
 branch=""
+repo_root=""
 if [ -n "$cwd" ] && [ -d "$cwd" ]; then
   if git_cache_stale; then
     branch=$(GIT_OPTIONAL_LOCKS=0 git -C "$cwd" symbolic-ref --short HEAD 2>/dev/null \
              || GIT_OPTIONAL_LOCKS=0 git -C "$cwd" rev-parse --short HEAD 2>/dev/null)
-    echo "$branch" > "$git_cache"
+    repo_root=$(GIT_OPTIONAL_LOCKS=0 git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)
+    printf '%s\n%s\n' "$branch" "$repo_root" > "$git_cache"
   else
-    branch=$(< "$git_cache")
+    { read -r branch; read -r repo_root; } < "$git_cache"
+  fi
+fi
+
+# Directory: repo root + relative path inside git repos, last 2 components outside
+if [ -n "$repo_root" ]; then
+  repo_name="${repo_root##*/}"
+  rel_path="${cwd#"$repo_root"}"
+  rel_path="${rel_path#/}"
+  if [ -n "$rel_path" ]; then
+    short_cwd="${repo_name}/${rel_path}"
+  else
+    short_cwd="$repo_name"
+  fi
+else
+  short_cwd="${cwd/#$HOME/\~}"
+  IFS='/' read -ra parts <<< "$short_cwd"
+  n=${#parts[@]}
+  if [ "$n" -gt 2 ]; then
+    short_cwd="…/${parts[$((n-2))]}/${parts[$((n-1))]}"
   fi
 fi
 
@@ -154,4 +184,4 @@ if [ -n "$cost_usd" ] && [ "$cost_usd" != "null" ]; then
 fi
 
 # --- Output ---
-printf "%b\n" "${cyan}${short_cwd}${reset}${branch:+  ${magenta}${branch}${reset}}  ${dim}${short_model}${reset}${effort_seg}${ctx_seg}${rate_seg}${cost_seg}"
+printf "%b\n" "${host_seg}${bold_cyan}${short_cwd}${reset}${branch:+  ${italic_cyan}${branch}${reset}}  ${dim}${short_model}${reset}${effort_seg}${ctx_seg}${rate_seg}${cost_seg}"
