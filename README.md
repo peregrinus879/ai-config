@@ -6,8 +6,8 @@ Claude Code and OpenCode global dotfiles, managed with [GNU Stow](https://www.gn
 
 - [`dotfiles-ai`](https://github.com/peregrinus879/dotfiles-ai) - Claude Code and OpenCode global dotfiles, managed with GNU Stow
 - [`dotfiles-arch`](https://github.com/peregrinus879/dotfiles-arch) - Headless Arch Linux dotfiles adapted from Omarchy, managed with GNU Stow
-- [`dotfiles-wsl`](https://github.com/peregrinus879/dotfiles-wsl) - WSL (Arch Linux) dotfiles adapted from Omarchy, managed with GNU Stow
-- [`dotfiles-omarchy`](https://github.com/peregrinus879/dotfiles-omarchy) - Omarchy personal dotfiles, managed with GNU
+- [`dotfiles-wsl`](https://github.com/peregrinus879/dotfiles-wsl) - WSL overlay for dotfiles-arch (Arch Linux), managed with GNU Stow
+- [`dotfiles-omarchy`](https://github.com/peregrinus879/dotfiles-omarchy) - Omarchy personal dotfiles, managed with GNU Stow
 
 ## Supported Tools
 
@@ -150,22 +150,10 @@ After stowing the shared AI tooling config:
 - Run `opencode debug config` and confirm the resolved config includes the shared guidance path and `share = disabled`.
 - Confirm `/commit` still routes through the repo skill workflow in both tools.
 
-## Maintainer Checklist
-
-When updating this repo for new Claude Code or OpenCode releases:
-
-1. Review the current Claude Code docs for overview, settings, memory, skills, and hooks.
-2. Review the current OpenCode docs for config, rules, permissions, agents, skills, TUI, and sharing.
-3. Run `opencode debug config` and confirm the resolved config still matches the tracked intent.
-4. Start a fresh session in both tools and verify the shared guidance file is loaded.
-5. Verify Claude Code status line behavior still matches `claude-code/.claude/settings.json` and `statusline.sh`.
-6. Verify OpenCode diff review remains usable over SSH and that sharing stays disabled unless intentionally changed.
-7. Verify `/commit` still performs documentation sync before staging when docs are affected.
-
 ## References
 
 - `README.md` - repo scope, structure, setup, and verification
-- `AGENTS.md` - canonical repo-specific assistant context
+- `AGENTS.md` - canonical repo-specific assistant context and maintainer checklist
 - `CLAUDE.md` - thin Claude Code wrapper importing `AGENTS.md`
 - `claude-code/.claude/rules/shared-guidance.md` - canonical shared cross-tool guidance
 
