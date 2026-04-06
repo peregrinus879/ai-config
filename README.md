@@ -1,6 +1,13 @@
 # dotfiles-ai
 
-Global configuration files for AI coding assistants, managed with [GNU Stow](https://www.gnu.org/software/stow/).
+Claude Code and OpenCode global dotfiles, managed with [GNU Stow](https://www.gnu.org/software/stow/).
+
+## Repo Family
+
+- [`dotfiles-ai`](https://github.com/peregrinus879/dotfiles-ai) - Claude Code and OpenCode global dotfiles, managed with GNU Stow
+- [`dotfiles-arch`](https://github.com/peregrinus879/dotfiles-arch) - Headless Arch Linux dotfiles adapted from Omarchy, managed with GNU Stow
+- [`dotfiles-wsl`](https://github.com/peregrinus879/dotfiles-wsl) - WSL (Arch Linux) dotfiles adapted from Omarchy, managed with GNU Stow
+- [`dotfiles-omarchy`](https://github.com/peregrinus879/dotfiles-omarchy) - Omarchy personal dotfiles, managed with GNU
 
 ## Supported Tools
 
@@ -9,7 +16,7 @@ Global configuration files for AI coding assistants, managed with [GNU Stow](htt
 
 ## Scope
 
-This repo is the source of truth for shared cross-tool AI assistant guidance and portable tracked config for Claude Code and OpenCode.
+This repo tracks shared cross-tool AI assistant guidance and portable tracked config for Claude Code and OpenCode.
 
 It intentionally excludes auth and session state, machine-local files, and generated host-specific config. The repo root keeps a minimal `AGENTS.md` plus a thin `CLAUDE.md` compatibility wrapper so the repo can be maintained natively in both tools.
 
@@ -139,9 +146,8 @@ stow -v -n -t ~ claude-code opencode
 After stowing the shared AI tooling config:
 
 - Confirm core symlinks exist: `test -L ~/.claude/CLAUDE.md && test -L ~/.config/opencode/opencode.json`
-- Start a fresh Claude Code session and confirm `~/.claude/rules/shared-guidance.md` is loaded.
+- Start a fresh Claude Code session and confirm the shared guidance file and status line load as expected.
 - Run `opencode debug config` and confirm the resolved config includes the shared guidance path and `share = disabled`.
-- Confirm Claude Code status line behavior still matches `claude-code/.claude/settings.json` and `claude-code/.claude/statusline.sh`.
 - Confirm `/commit` still routes through the repo skill workflow in both tools.
 
 ## Maintainer Checklist
