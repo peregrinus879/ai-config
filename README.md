@@ -9,7 +9,7 @@ Global configuration files for AI coding assistants, managed with [GNU Stow](htt
 
 ## Scope
 
-This repo tracks user-level terminal configuration for Claude Code and OpenCode.
+This repo is the source of truth for shared cross-tool AI assistant guidance and portable tracked config for Claude Code and OpenCode.
 
 It intentionally excludes auth and session state, machine-local files, and generated host-specific config. The repo root keeps a minimal `AGENTS.md` plus a thin `CLAUDE.md` compatibility wrapper so the repo can be maintained natively in both tools.
 
@@ -49,7 +49,7 @@ dotfiles-ai/
 
 Tracked runtime config is limited to shared behavior, currently Claude Code `settings.json` for the custom status line, OpenCode `opencode.json` for the shared default model `openai/gpt-5.4`, local `ollama/gemma4:31b` provider definition, built-in `build` agent approval policy, and disabled conversation sharing, plus OpenCode `tui.json` for a stacked diff view that works better over SSH.
 
-Machine-local paths (`projects/`, `agent-memory/`), auth/session state, and generated or host-specific config files remain intentionally excluded.
+Machine-local paths (`projects/`, `agent-memory/`), auth/session state, and generated or host-specific config files remain intentionally excluded. The repo root `.gitignore` tracks the documented machine-local paths so accidental local state stays out of Git.
 
 Repo-root instruction files exist only to maintain `dotfiles-ai` itself; they are not part of the stowed payload.
 
@@ -84,18 +84,6 @@ Both tools support `!`-prefixed Bash commands in the interactive terminal UI.
 `opencode/.config/opencode/tui.json` sets `diff_style` to `stacked`, which is easier to scan in narrower SSH terminals.
 
 OpenCode docs can reflect the `dev` branch before a feature reaches the latest stable release, so prefer your installed `/help` output when docs and behavior disagree.
-
-## Maintainer Checklist
-
-When updating this repo for new Claude Code or OpenCode releases:
-
-1. Review the current Claude Code docs for overview, settings, memory, skills, and hooks.
-2. Review the current OpenCode docs for config, rules, permissions, agents, skills, TUI, and sharing.
-3. Run `opencode debug config` and confirm the resolved config still matches the tracked intent.
-4. Start a fresh session in both tools and verify the shared guidance file is loaded.
-5. Verify Claude Code status line behavior still matches `claude-code/.claude/settings.json` and `statusline.sh`.
-6. Verify OpenCode diff review remains usable over SSH and that sharing stays disabled unless intentionally changed.
-7. Verify `/commit` still performs documentation sync before staging when docs are affected.
 
 ## Setup
 
@@ -137,6 +125,40 @@ Preview what stow would do without making changes:
 cd ~/path/to/dotfiles-ai
 stow -v -n -t ~ claude-code opencode
 ```
+
+## Verify
+
+After stowing the shared AI tooling config:
+
+- Confirm core symlinks exist: `test -L ~/.claude/CLAUDE.md && test -L ~/.config/opencode/opencode.json`
+- Start a fresh Claude Code session and confirm `~/.claude/rules/shared-guidance.md` is loaded.
+- Run `opencode debug config` and confirm the resolved config includes the shared guidance path and `share = disabled`.
+- Confirm Claude Code status line behavior still matches `claude-code/.claude/settings.json` and `claude-code/.claude/statusline.sh`.
+- Confirm `/commit` still routes through the repo skill workflow in both tools.
+
+## Maintainer Checklist
+
+When updating this repo for new Claude Code or OpenCode releases:
+
+1. Review the current Claude Code docs for overview, settings, memory, skills, and hooks.
+2. Review the current OpenCode docs for config, rules, permissions, agents, skills, TUI, and sharing.
+3. Run `opencode debug config` and confirm the resolved config still matches the tracked intent.
+4. Start a fresh session in both tools and verify the shared guidance file is loaded.
+5. Verify Claude Code status line behavior still matches `claude-code/.claude/settings.json` and `statusline.sh`.
+6. Verify OpenCode diff review remains usable over SSH and that sharing stays disabled unless intentionally changed.
+7. Verify `/commit` still performs documentation sync before staging when docs are affected.
+
+## References
+
+- `README.md` - repo scope, structure, setup, and verification
+- `AGENTS.md` - canonical repo-specific assistant context
+- `CLAUDE.md` - thin Claude Code wrapper importing `AGENTS.md`
+- `claude-code/.claude/rules/shared-guidance.md` - canonical shared cross-tool guidance
+
+## Related Repos
+
+- `~/projects/repos/dotfiles/dotfiles-arch` - shared Linux baseline for terminal tooling and editor config
+- `~/projects/repos/dotfiles/dotfiles-wsl` - additive WSL and Windows-specific overlay for the same repo family
 
 ## License
 

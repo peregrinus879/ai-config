@@ -1,10 +1,11 @@
 # AGENTS.md - dotfiles-ai
 
-This repo stores user-level configuration for Claude Code and OpenCode, deployed to `$HOME` via GNU Stow.
+This repo stores portable user-level AI assistant configuration for Claude Code and OpenCode, deployed to `$HOME` via GNU Stow.
 
 ## Purpose
 
-- Track portable user-level terminal configuration for both tools.
+- Track portable user-level configuration for both tools.
+- Keep shared cross-tool guidance canonical while keeping tool-specific wrappers thin.
 - Keep auth and session state, machine-local files, and generated host-specific files out of Git.
 - Keep human-facing explanation in `README.md`; keep project instructions here concise and actionable.
 
@@ -23,6 +24,7 @@ This repo stores user-level configuration for Claude Code and OpenCode, deployed
 - Prefer `$HOME`-based paths for shared user-level files referenced from OpenCode config.
 - Prefer plural OpenCode directory names (`agents/`, `commands/`, `skills/`, `tools/`, `themes/`, `plugins/`, `modes/`); singular names are backward-compatibility fallbacks.
 - Keep tracked runtime config limited to shared, portable behavior.
+- Keep the repo-root `.gitignore` aligned with the documented excluded local state.
 - Keep wrappers thin. If detailed rationale is needed, put it in `README.md`, not here.
 - After instruction or config changes, verify them in a fresh Claude Code session and a fresh OpenCode session when practical.
 - For patch review in either tool, use `!git status --short`, `!git diff --stat`, `!git diff`, and `!git diff -- path/to/file`.
