@@ -97,8 +97,16 @@ sudo pacman -S --needed stow
 
 ### Clone
 
+Recommended local layout for this repo family:
+
+```text
+~/projects/repos/dotfiles/dotfiles-ai
+```
+
+Stow can work from any clone location, but the related docs and cross-repo maintenance workflows assume this layout.
+
 ```bash
-git clone https://github.com/peregrinus879/dotfiles-ai.git ~/path/to/dotfiles-ai
+git clone https://github.com/peregrinus879/dotfiles-ai.git ~/projects/repos/dotfiles/dotfiles-ai
 ```
 
 ### Stow
@@ -106,14 +114,14 @@ git clone https://github.com/peregrinus879/dotfiles-ai.git ~/path/to/dotfiles-ai
 Create symlinks for all packages:
 
 ```bash
-cd ~/path/to/dotfiles-ai
+cd ~/projects/repos/dotfiles/dotfiles-ai
 stow -v -t ~ claude-code opencode
 ```
 
 ### Unstow
 
 ```bash
-cd ~/path/to/dotfiles-ai
+cd ~/projects/repos/dotfiles/dotfiles-ai
 stow -D -v -t ~ claude-code opencode
 ```
 
@@ -122,7 +130,7 @@ stow -D -v -t ~ claude-code opencode
 Preview what stow would do without making changes:
 
 ```bash
-cd ~/path/to/dotfiles-ai
+cd ~/projects/repos/dotfiles/dotfiles-ai
 stow -v -n -t ~ claude-code opencode
 ```
 
