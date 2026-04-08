@@ -48,7 +48,7 @@ It does not own:
 
 ## Skills
 
-- `/commit` - commit workflow with documentation sync before staging when docs are affected
+- `/commit` - commit workflow with doc sync, scratch cleanup, staging, and push hint
 
 ## Workflow
 
@@ -70,4 +70,4 @@ It does not own:
 4. Start a fresh session in both tools and verify the shared guidance file is loaded.
 5. Verify Claude Code status line behavior still matches `claude-code/.claude/settings.json` and `statusline.sh`.
 6. Verify OpenCode diff review remains usable over SSH and that sharing stays disabled unless intentionally changed.
-7. Verify `/commit` still performs documentation sync before staging when docs are affected.
+7. Verify `/commit` still performs doc sync and scratch cleanup before staging.

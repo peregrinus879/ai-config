@@ -36,7 +36,7 @@ dotfiles-ai/
 │       ├── rules/                        # organized instruction files
 │       │   └── shared-guidance.md        # canonical shared instructions
 │       └── skills/                       # custom skills (SKILL.md files)
-│           └── commit/                   # commit conventions and doc sync
+│           └── commit/                   # commit workflow (doc sync, scratch cleanup)
 └── opencode/                             # stow package -> ~/.config/opencode/
     └── .config/
         └── opencode/
@@ -49,7 +49,7 @@ dotfiles-ai/
             ├── modes/                    # mode configurations
             ├── plugins/                  # plugins
             ├── skills/                   # agent skills
-            │   └── commit/               # commit conventions and doc sync
+            │   └── commit/               # commit workflow (doc sync, scratch cleanup)
             ├── themes/                   # custom themes
             └── tools/                    # custom tool definitions
 ```
@@ -75,7 +75,7 @@ In practice, guidance is shared when the content and meaning are the same in bot
 
 At the repo root, `AGENTS.md` is the canonical project instruction file and `CLAUDE.md` is a thin compatibility wrapper for Claude Code.
 
-OpenCode skills are loaded by the agent, while custom slash commands live under `commands/`; this repo keeps a `/commit` wrapper and folds documentation sync into the commit workflow instead of maintaining a separate `/update` command.
+OpenCode skills are loaded by the agent, while custom slash commands live under `commands/`; this repo keeps a `/commit` wrapper and folds documentation sync and scratch file cleanup into the commit workflow instead of maintaining a separate `/update` command.
 
 ## Review Workflow
 
