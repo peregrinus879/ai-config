@@ -14,11 +14,12 @@ readarray -t _f <<< "$(echo "$input" | jq -r '
   (.rate_limits.seven_day.used_percentage // ""),
   (.cost.total_cost_usd // ""),
   (.rate_limits.five_hour.resets_at // ""),
-  (.rate_limits.seven_day.resets_at // "")
+  (.rate_limits.seven_day.resets_at // ""),
+  (.session_id // "")
 ')"
 cwd="${_f[0]}" model="${_f[1]}" used_pct="${_f[2]}" ctx_size="${_f[3]}"
 rate_5h="${_f[4]}" rate_7d="${_f[5]}" cost_usd="${_f[6]}"
-reset_5h="${_f[7]}" reset_7d="${_f[8]}"
+reset_5h="${_f[7]}" reset_7d="${_f[8]}" session_id="${_f[9]}"
 
 # effortLevel is not in the statusline JSON schema;
 # read directly from settings.json as a workaround.
@@ -65,11 +66,40 @@ fmt_countdown() {
   fi
 }
 
-# --- Detect extra usage ---
+# Append a rate-limit segment to rate_seg
+# Args: label pct reset_epoch date_fmt
+build_rate_seg() {
+  local label=$1 pct=$2 epoch=$3 dfmt=$4
+  local color value rtime_part=""
+
+  [ -z "$pct" ] || [ "$pct" = "null" ] && return
+  pct=$(printf '%.0f' "$pct")
+  color=$(pct_color "$pct")
+
+  if [ "$pct" -ge 100 ] 2>/dev/null && [ "${epoch:-0}" -gt 0 ] 2>/dev/null; then
+    local countdown
+    countdown=$(fmt_countdown "$((epoch - now))")
+    value="${countdown:-${pct}%}"
+  else
+    value="${pct}%"
+  fi
+
+  if [ "${epoch:-0}" -gt "$now" ] 2>/dev/null; then
+    local rtime
+    rtime=$(date -d "@$epoch" +"$dfmt" 2>/dev/null)
+    [ -n "$rtime" ] && rtime_part=" ${dim}@${rtime}${reset}"
+  fi
+
+  rate_seg+="  ${dim}${label}:${reset}${color}${value}${reset}${rtime_part}"
+}
+
+# --- Detect extra usage (5h OR 7d at 100%) ---
 extra_usage=0
 if [ -n "$rate_5h" ] && [ "$rate_5h" != "null" ]; then
-  r5_check=$(printf '%.0f' "$rate_5h")
-  [ "$r5_check" -ge 100 ] 2>/dev/null && extra_usage=1
+  [ "$(printf '%.0f' "$rate_5h")" -ge 100 ] 2>/dev/null && extra_usage=1
+fi
+if [ "$extra_usage" -eq 0 ] && [ -n "$rate_7d" ] && [ "$rate_7d" != "null" ]; then
+  [ "$(printf '%.0f' "$rate_7d")" -ge 100 ] 2>/dev/null && extra_usage=1
 fi
 
 # --- Git cache (docs: cache expensive operations) ---
@@ -138,48 +168,42 @@ if [ -n "$used_pct" ] && [ "$used_pct" != "null" ] && [ "$ctx_size" -gt 0 ] 2>/d
   ctx_seg="  $(pct_color "$used_int")$(fmt_k "$used_raw") (${used_int}%)${reset}"
 fi
 
-# 6. Rate limits: 5h and 7d (with reset countdown at 100%)
-# rate_limits can be absent early in session.
+# 6. Rate limits: 5h and 7d (with reset countdown and local reset time)
 now=$(date +%s)
 rate_seg=""
-if [ -n "$rate_5h" ] && [ "$rate_5h" != "null" ]; then
-  r5=$(printf '%.0f' "$rate_5h")
-  if [ "$r5" -ge 100 ] 2>/dev/null && [ -n "$reset_5h" ] && [ "$reset_5h" != "null" ]; then
-    countdown=$(fmt_countdown "$((reset_5h - now))")
-    if [ -n "$countdown" ]; then
-      rate_seg="  ${dim}5h:${reset}$(pct_color "$r5")${countdown}${reset}"
-    else
-      rate_seg="  ${dim}5h:${reset}$(pct_color "$r5")${r5}%${reset}"
-    fi
-  else
-    rate_seg="  ${dim}5h:${reset}$(pct_color "$r5")${r5}%${reset}"
-  fi
-fi
-if [ -n "$rate_7d" ] && [ "$rate_7d" != "null" ]; then
-  r7=$(printf '%.0f' "$rate_7d")
-  if [ "$r7" -ge 100 ] 2>/dev/null && [ -n "$reset_7d" ] && [ "$reset_7d" != "null" ]; then
-    countdown=$(fmt_countdown "$((reset_7d - now))")
-    if [ -n "$countdown" ]; then
-      rate_seg+="  ${dim}7d:${reset}$(pct_color "$r7")${countdown}${reset}"
-    else
-      rate_seg+="  ${dim}7d:${reset}$(pct_color "$r7")${r7}%${reset}"
-    fi
-  else
-    rate_seg+="  ${dim}7d:${reset}$(pct_color "$r7")${r7}%${reset}"
-  fi
-fi
+build_rate_seg "5h" "$rate_5h" "$reset_5h" "%H:%M"
+build_rate_seg "7d" "$rate_7d" "$reset_7d" "%a.%H:%M"
 
-# 7. Session cost
+# 7. Session cost (tracks only extra usage spend)
+# State: line 1 = active|frozen, line 2 = baseline, line 3 = prior extra, line 4 = last displayed
+extra_state="/tmp/statusline-extra-${session_id:-unknown}"
 cost_seg=""
-if [ -n "$cost_usd" ] && [ "$cost_usd" != "null" ]; then
-  is_positive=$(echo "$cost_usd" | jq '. > 0' 2>/dev/null)
-  if [ "$is_positive" = "true" ]; then
-    cost_fmt=$(printf '$%.2f' "$cost_usd")
-    if [ "$extra_usage" -eq 1 ] 2>/dev/null; then
-      cost_seg="  ${yellow}${cost_fmt}${reset}"
-    else
-      cost_seg="  ${dim}${cost_fmt}${reset}"
+if [ "$extra_usage" -eq 1 ] 2>/dev/null; then
+  if [ -f "$extra_state" ]; then
+    { read -r _st; read -r _bl; read -r _pr; read -r _ld; } < "$extra_state"
+    if [ "$_st" = "frozen" ]; then
+      # Re-entering extra usage: carry over frozen value, set new baseline
+      _pr="${_ld:-0}"
+      _bl="${cost_usd:-0}"
     fi
+  else
+    _bl="${cost_usd:-0}" _pr="0" _ld="0"
+  fi
+  if [ -n "$cost_usd" ] && [ "$cost_usd" != "null" ]; then
+    extra_cost=$(jq -n --argjson c "$cost_usd" --argjson b "${_bl:-0}" --argjson p "${_pr:-0}" '$p + $c - $b' 2>/dev/null) || extra_cost=0
+    printf '%s\n' "active" "$_bl" "$_pr" "$extra_cost" > "$extra_state"
+    cost_seg="  ${yellow}$(printf '$%.2f' "$extra_cost")${reset}"
+  fi
+else
+  if [ -f "$extra_state" ]; then
+    { read -r _st; read -r _bl; read -r _pr; read -r _ld; } < "$extra_state"
+    if [ "$_st" = "active" ]; then
+      # Transition to frozen: use last displayed value, not recomputed
+      printf '%s\n' "frozen" "0" "0" "${_ld:-0}" > "$extra_state"
+    fi
+    cost_seg="  ${dim}$(printf '$%.2f' "${_ld:-0}")${reset}"
+  else
+    cost_seg="  ${dim}\$0.00${reset}"
   fi
 fi
 
