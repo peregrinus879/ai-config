@@ -17,6 +17,7 @@ readarray -t _f <<< "$(echo "$input" | jq -r '
   (.rate_limits.seven_day.resets_at // ""),
   (.session_id // "")
 ')"
+for i in "${!_f[@]}"; do _f[$i]="${_f[$i]%$'\r'}"; done
 cwd="${_f[0]}" model="${_f[1]}" used_pct="${_f[2]}" ctx_size="${_f[3]}"
 rate_5h="${_f[4]}" rate_7d="${_f[5]}" cost_usd="${_f[6]}"
 reset_5h="${_f[7]}" reset_7d="${_f[8]}" session_id="${_f[9]}"
