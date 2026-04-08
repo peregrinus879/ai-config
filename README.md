@@ -116,6 +116,27 @@ Stow can work from any clone location, but the related docs and cross-repo maint
 git clone https://github.com/peregrinus879/dotfiles-ai.git ~/projects/repos/dotfiles/dotfiles-ai
 ```
 
+### Prepare
+
+Checklist before stowing:
+
+- Stow is installed
+- `dotfiles-ai` was cloned locally
+- Any existing conflicting config files were removed
+
+Remove existing files that would conflict with stow. The first block removes tree-folded directory symlinks left by a previous stow (harmless on a fresh machine). The second block removes the one file Claude Code auto-creates that would conflict on a fresh install:
+
+```bash
+# Tree-folded directory symlinks (from a previous stow)
+rm -f ~/.claude/agents ~/.claude/rules ~/.claude/skills
+rm -f ~/.config/opencode ~/.config/opencode/agents ~/.config/opencode/commands \
+  ~/.config/opencode/modes ~/.config/opencode/plugins ~/.config/opencode/skills \
+  ~/.config/opencode/themes ~/.config/opencode/tools
+
+# Individual config files
+rm -f ~/.claude/settings.json
+```
+
 ### Stow
 
 Create symlinks for all packages:
@@ -140,6 +161,26 @@ Preview what stow would do without making changes:
 cd ~/projects/repos/dotfiles/dotfiles-ai
 stow -v -n -t ~ claude-code opencode
 ```
+
+### Re-stow
+
+To update symlinks after the repo content changes (same clone path):
+
+```bash
+cd ~/projects/repos/dotfiles/dotfiles-ai
+stow -R -v -t ~ claude-code opencode
+```
+
+To migrate from a different clone path, unstow from the old location first:
+
+```bash
+cd /old/clone/path
+stow -D -v -t ~ claude-code opencode
+cd ~/projects/repos/dotfiles/dotfiles-ai
+stow -v -t ~ claude-code opencode
+```
+
+If the old clone is no longer available, run the full cleanup in the Prepare section before stowing.
 
 ## Verify
 
