@@ -31,6 +31,47 @@
   "autoupdate": true,
   "default_agent": "plan",
   "model": "openai/gpt-5.4",
+  "permission": {
+    "read": {
+      "*": "allow",
+      "**/*.key": "deny",
+      "**/*.pem": "deny",
+      "**/*credentials*": "deny",
+      "**/secrets/**": "deny",
+      "*.env": "deny",
+      "*.env.*": "deny",
+      "*.env.example": "allow",
+      "~/.aws/credentials": "deny",
+      "~/.gnupg/**": "deny",
+      "~/.ssh/**": "deny"
+    },
+    "bash": {
+      "*": "ask",
+      "du *": "allow",
+      "file *": "allow",
+      "find": "allow",
+      "find *": "allow",
+      "ls": "allow",
+      "ls *": "allow",
+      "stat *": "allow",
+      "tree": "allow",
+      "tree *": "allow",
+      "wc *": "allow",
+      "* > *": "deny",
+      "* >> *": "deny",
+      "* | tee*": "deny",
+      "find * -delete*": "deny",
+      "find * -exec *": "deny",
+      "find * -execdir *": "deny",
+      "find * -ok *": "deny",
+      "find * -okdir *": "deny",
+      "tree * --output *": "deny",
+      "tree * -o *": "deny"
+    },
+    "webfetch": "allow",
+    "websearch": "allow",
+    "external_directory": "ask"
+  },
   "share": "disabled",
   "provider": {
     "ollama": {
