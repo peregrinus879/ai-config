@@ -3,6 +3,8 @@
   "instructions": [
     "{env:HOME}/.claude/rules/shared-guidance.md"
   ],
+  "model": "openai/gpt-5.4",
+  "default_agent": "plan",
   "agent": {
     "build": {
       "permission": {
@@ -29,9 +31,8 @@
     }
   },
   "autoupdate": true,
-  "default_agent": "plan",
-  "model": "openai/gpt-5.4",
   "permission": {
+    "*": "ask",
     "read": {
       "*": "allow",
       "**/*.key": "deny",
@@ -45,6 +46,11 @@
       "~/.gnupg/**": "deny",
       "~/.ssh/**": "deny"
     },
+    "glob": "allow",
+    "grep": "allow",
+    "lsp": "allow",
+    "question": "allow",
+    "edit": "deny",
     "bash": {
       "*": "ask",
       "du *": "allow",
@@ -77,7 +83,6 @@
     "ollama": {
       "models": {
         "gemma4:31b": {
-          "_launch": true,
           "name": "gemma4:31b"
         }
       },
