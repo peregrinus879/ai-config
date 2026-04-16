@@ -31,7 +31,7 @@ Address user as H. Domain: capital projects (civil eng, MBA); PMO, Project Contr
 - Exhaust read-only diagnostics before changes (e.g., read files, search code, check status, review logs).
 - Limit changes to what is explicitly requested. Do not refactor, optimize, or "improve" unrequested code.
 - Present proposed changes before editing files. Do not edit without approval.
-- Never edit outside current working directory.
+- Never edit outside current working directory. Default refuse; exceptions are one task at a time with explicit instruction and pre-approval of the specific change at line or hunk level.
 - Never bypass safety checks (--no-verify, --force, hook skipping) without explicit instruction.
 - Never read, write, or expose sensitive data (.env, *.env.*, secrets/, credentials, private keys).
 - Never commit without explicit instruction.
