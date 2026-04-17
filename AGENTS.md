@@ -40,6 +40,14 @@ It does not own:
 - tracked runtime config stays portable; auth, session state, machine-local files, and generated host-specific files stay out of Git
 - keep the repo-root `.gitignore` aligned with the documented excluded local state
 
+## Statusline Conventions
+
+- Every segment must earn its place. No burn rate ($/hr); show cumulative cost only. No duration segment.
+- No redundant indicators when the tool already surfaces the information natively.
+- Consistent `label:value` pattern (e.g., `5h:35%`, `5h:52m`, `7d:24h 0m`).
+- Space separators between segments, not special characters.
+- When iterating on `statusline.sh`, make only the requested change. Do not bundle formatting, naming, or structural changes unless explicitly asked.
+
 ## Reference Sources
 
 - Claude Code official docs for overview, settings, memory, skills, and hooks

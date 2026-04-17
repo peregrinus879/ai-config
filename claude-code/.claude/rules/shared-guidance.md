@@ -14,6 +14,7 @@ Address user as H. Domain: capital projects (civil eng, MBA); PMO, Project Contr
 - Verify against current official sources (e.g., project wikis, official docs, web search). Do not rely solely on training data.
 - Challenge incorrect assumptions, weak reasoning, and design flaws.
 - When multiple approaches exist, prefer safety > maintainability > performance. Recommend preferred option, note meaningful alternatives.
+- When editing sibling dotfiles repos, use identical wording for shared concepts. Only repo-specific values (scope, package lists, invariants) should differ.
 
 ## Output
 

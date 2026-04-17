@@ -64,6 +64,7 @@ scratch or iteration artifacts (`git ls-files --others --exclude-standard`).
 - Separate commits by type
 - Subject: imperative mood, concise (50 chars), lowercase
 - Body: when the change needs context (explain why, not what)
+- No ephemeral references: no audit numbers, ticket IDs, or session-specific identifiers
 - Co-Author: always append with current model
 - Push: user handles manually (SSH passphrase required). Do not push.
 
