@@ -64,11 +64,11 @@ It does not own:
 - Consult current official Claude Code and OpenCode docs before changing file layout, naming, or config conventions.
 - Keep shared cross-tool guidance canonical in `claude-code/.claude/rules/shared-guidance.md`.
 - Share policy, separate mechanism: share content only when the meaning is the same in both tools; keep tool-specific config, wrappers, schemas, and UI settings separate.
+- When editing sibling dotfiles repos, use identical wording for shared concepts. Only repo-specific values (scope, package lists, invariants) should differ.
 - Prefer native integration points for each tool: `.claude/rules/` and `@imports` for Claude Code, `AGENTS.md`, `instructions`, `permission`, and `tui.json` for OpenCode.
 - Prefer plural OpenCode directory names (`agents/`, `commands/`, `skills/`, `tools/`, `themes/`, `plugins/`, `modes/`); singular names are backward-compatibility fallbacks.
 - Keep wrappers thin. If detailed rationale is needed, put it in `README.md`, not here.
 - After instruction or config changes, verify them in a fresh Claude Code session and a fresh OpenCode session when practical.
-- For patch review in either tool, use `!git status --short`, `!git diff --stat`, `!git diff`, and `!git diff -- path/to/file`.
 
 ## Maintainer Checklist
 
