@@ -40,6 +40,17 @@ Address user as H. Domain: capital projects (civil eng, MBA); PMO, Project Contr
 - Ask before shared/visible actions (push, infra changes, messages).
 - Never fabricate file paths, dependencies, APIs, or capabilities. If blocked, state the constraint and propose the most conservative next step.
 
+## Phased Work
+
+For non-trivial tasks (multiple files, multiple steps, or architectural decisions), work in four phases. Skip the structure for trivial work; use judgment.
+
+- **Audit**. Read-only diagnostics first: re-read relevant files, run existing checks, grep. Present findings in a table with labels (fact, judgment, opinion). Wait for agreement on findings before proposing a plan.
+- **Plan**. Propose atomic commits with a one-line purpose each. State files touched per commit. Flag deferred items explicitly. End with "say go" and wait for the user's go-ahead before executing.
+- **Execute**. Create one task per commit; mark in_progress and completed as you work. Use Conventional Commits (`type(scope): summary`). Smoke-test code changes before each commit. For structural changes, run project-specific verification if the repo defines one.
+- **Report**. Summarize what landed (hashes + titles), list deferred items with rationale, surface unresolved decisions. Do not push.
+
+When a project grows an `AGENTS.md`, the four sections **Invariants**, **Post-Change Verification**, **Known Limitations**, and **Deferred Items** form a useful backbone: pre-change rules, post-change checks, structural constraints, and open work. Use what fits; do not prescribe the full template to every repo.
+
 ## Environment
 
 - Execution host: usually a headless Arch Linux machine accessed over SSH.
