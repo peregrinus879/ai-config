@@ -9,7 +9,7 @@ disable-model-invocation: true
 ## Format
 
 ```
-<type>: <subject>
+<type>[(scope)]: <subject>
 
 [optional body]
 
@@ -62,6 +62,7 @@ scratch or iteration artifacts (`git ls-files --others --exclude-standard`).
 
 - Atomic: one complete, self-contained change per commit
 - Separate commits by type
+- Scope: include when the change is localized to a component (e.g., `hooks`, `nvim`, `templates`). Omit for top-level or cross-cutting changes (e.g., CHANGELOG, DESIGN, README).
 - Subject: imperative mood, concise (50 chars), lowercase
 - Body: when the change needs context (explain why, not what)
 - No ephemeral references: no audit numbers, ticket IDs, or session-specific identifiers
