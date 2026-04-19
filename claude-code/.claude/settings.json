@@ -42,6 +42,5 @@
     "type": "command",
     "command": "~/.claude/statusline.sh"
   },
-  "effortLevel": "high",
-  "autoUpdatesChannel": "stable"
+  "effortLevel": "xhigh"
 }
