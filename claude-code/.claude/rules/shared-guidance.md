@@ -57,5 +57,5 @@ When a project grows an `AGENTS.md`, the four sections **Invariants**, **Post-Ch
 - Client OS: Omarchy (Arch Linux + Hyprland) or WSL (Arch Linux).
 - Client terminal: Ghostty (Omarchy) or Windows Terminal (WSL).
 - Dev: Tmux, Neovim (LazyVim), Bash.
-- Commits: Use `/commit` skill. Conventional Commits, atomic, imperative mood.
+- Commits: Use `/commit` skill.
 - Push: User handles manually (SSH passphrase required). Do not push.
