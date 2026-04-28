@@ -63,13 +63,13 @@ dotfiles-ai/
             └── tools/                    # custom tool definitions
 ```
 
-Tracked runtime config is limited to shared behavior, currently Claude Code `settings.json` for the custom status line and a shared allow/deny permission policy, OpenCode `opencode.json` for the default agent `plan`, the shared default model `openai/gpt-5.5` with `xhigh` reasoning effort, a shared top-level permission policy, local `ollama/gemma4:31b` provider definition, built-in `build` agent approval policy, and disabled conversation sharing, plus OpenCode `tui.json` for a stacked diff view that works better over SSH.
+Tracked runtime config is limited to shared behavior, currently Claude Code `settings.json` for the custom status line and a shared allow/deny permission policy, OpenCode `opencode.json` for the default agent `plan`, the shared default model `openai/gpt-5.5` with `xhigh` reasoning effort, a shared top-level permission policy for read-only web fetch/search and code search tools, local `ollama/gemma4:31b` provider definition, built-in `build` agent approval policy, and disabled conversation sharing, plus OpenCode `tui.json` for a stacked diff view that works better over SSH.
 
 Machine-local paths (`projects/`, `agent-memory/`), auth/session state, and generated or host-specific config files remain intentionally excluded. The repo root `.gitignore` tracks the documented machine-local paths so accidental local state stays out of Git.
 
 Repo-root instruction files exist only to maintain `dotfiles-ai` itself; they are not part of the stowed payload.
 
-The built-in OpenCode `build` agent is intentionally overridden to require approval for file edits and non-read-only bash commands while allowing a narrow set of read-only shell inspections. A shared top-level permission policy auto-allows read-only network and shell tools, auto-denies writes and secret paths, and defers the rest to approval.
+The built-in OpenCode `build` agent is intentionally overridden to require approval for file edits and non-read-only bash commands while allowing a narrow set of read-only shell inspections. The shared top-level permission policy explicitly allows read-only `webfetch`, `websearch`, and `codesearch` usage without widening shell command permissions.
 
 Shared guidance now lives in `claude-code/.claude/rules/shared-guidance.md`. Claude Code loads it natively from `rules/`, while OpenCode loads the same file through the `instructions` field in `opencode.json` using `$HOME`-based path expansion.
 
