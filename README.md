@@ -63,7 +63,7 @@ dotfiles-ai/
             └── tools/                    # custom tool definitions
 ```
 
-Tracked runtime config is limited to shared behavior, currently Claude Code `settings.json` for the custom status line and a shared allow/deny permission policy, OpenCode `opencode.json` for the default agent `plan`, the shared default model `openai/gpt-5.4` with `xhigh` reasoning effort, a shared top-level permission policy, local `ollama/gemma4:31b` provider definition, built-in `build` agent approval policy, and disabled conversation sharing, plus OpenCode `tui.json` for a stacked diff view that works better over SSH.
+Tracked runtime config is limited to shared behavior, currently Claude Code `settings.json` for the custom status line and a shared allow/deny permission policy, OpenCode `opencode.json` for the default agent `plan`, the shared default model `openai/gpt-5.5` with `xhigh` reasoning effort, a shared top-level permission policy, local `ollama/gemma4:31b` provider definition, built-in `build` agent approval policy, and disabled conversation sharing, plus OpenCode `tui.json` for a stacked diff view that works better over SSH.
 
 Machine-local paths (`projects/`, `agent-memory/`), auth/session state, and generated or host-specific config files remain intentionally excluded. The repo root `.gitignore` tracks the documented machine-local paths so accidental local state stays out of Git.
 
