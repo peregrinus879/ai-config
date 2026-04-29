@@ -116,13 +116,13 @@ sudo pacman -S --needed stow
 Recommended local layout for this repo family:
 
 ```text
-~/projects/repos/dotfiles/dotfiles-ai
+~/Projects/repos/dotfiles/dotfiles-ai
 ```
 
 Stow can work from any clone location, but the related docs and cross-repo maintenance workflows assume this layout.
 
 ```bash
-git clone https://github.com/peregrinus879/dotfiles-ai.git ~/projects/repos/dotfiles/dotfiles-ai
+git clone https://github.com/peregrinus879/dotfiles-ai.git ~/Projects/repos/dotfiles/dotfiles-ai
 ```
 
 ### Prepare
@@ -151,14 +151,14 @@ rm -f ~/.claude/settings.json
 Create symlinks for all packages:
 
 ```bash
-cd ~/projects/repos/dotfiles/dotfiles-ai
+cd ~/Projects/repos/dotfiles/dotfiles-ai
 stow -v -t ~ claude-code opencode
 ```
 
 ### Unstow
 
 ```bash
-cd ~/projects/repos/dotfiles/dotfiles-ai
+cd ~/Projects/repos/dotfiles/dotfiles-ai
 stow -D -v -t ~ claude-code opencode
 ```
 
@@ -167,7 +167,7 @@ stow -D -v -t ~ claude-code opencode
 Preview what stow would do without making changes:
 
 ```bash
-cd ~/projects/repos/dotfiles/dotfiles-ai
+cd ~/Projects/repos/dotfiles/dotfiles-ai
 stow -v -n -t ~ claude-code opencode
 ```
 
@@ -176,7 +176,7 @@ stow -v -n -t ~ claude-code opencode
 To update symlinks after the repo content changes (same clone path):
 
 ```bash
-cd ~/projects/repos/dotfiles/dotfiles-ai
+cd ~/Projects/repos/dotfiles/dotfiles-ai
 stow -R -v -t ~ claude-code opencode
 ```
 
@@ -185,7 +185,7 @@ To migrate from a different clone path, unstow from the old location first:
 ```bash
 cd /old/clone/path
 stow -D -v -t ~ claude-code opencode
-cd ~/projects/repos/dotfiles/dotfiles-ai
+cd ~/Projects/repos/dotfiles/dotfiles-ai
 stow -v -t ~ claude-code opencode
 ```
 
@@ -209,8 +209,8 @@ After stowing the shared AI tooling config:
 
 ## Related Repos
 
-- `~/projects/repos/dotfiles/dotfiles-arch` - shared Linux baseline for terminal tooling and editor config
-- `~/projects/repos/dotfiles/dotfiles-wsl` - additive WSL and Windows-specific overlay for the same repo family
+- `~/Projects/repos/dotfiles/dotfiles-arch` - shared Linux baseline for terminal tooling and editor config
+- `~/Projects/repos/dotfiles/dotfiles-wsl` - additive WSL and Windows-specific overlay for the same repo family
 
 ## License
 
