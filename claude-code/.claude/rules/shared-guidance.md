@@ -57,6 +57,8 @@ When a project grows an `AGENTS.md`, the four sections **Invariants**, **Post-Ch
 - Client OS: Omarchy (Arch Linux + Hyprland) or WSL (Arch Linux).
 - Client terminal: Ghostty (Omarchy) or Windows Terminal (WSL).
 - Dev: Tmux, Neovim (LazyVim), Bash.
+- Verify the target machine before changing live config, stow links, packages, services, or `$HOME`.
+- Never apply machine-specific dotfiles from the wrong machine. Do not mutate unless the current machine matches. Stop and provide commands for the correct machine instead.
 - Commits: Use `/commit` skill.
 - Push: User handles manually (SSH passphrase required). Do not push.
 - Patch review: `!git status --short`, `!git diff --stat`, `!git diff`, `!git diff -- path/to/file`.
