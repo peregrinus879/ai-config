@@ -16,7 +16,11 @@ The three tools enforce one policy to different depths, and the configuration sa
 
 ## Read-only cross-vendor review
 
-A second opinion is worth most when it comes from a different model family that reads the same files. The bridges give one read-only, offline, single-turn reviewer with no write, web, plugin, or subagent surface, launched from a scrubbed environment under a hard timeout. Every flag is hard-coded so a caller cannot weaken the reviewer, and a repository that must not reach the other vendor opts out with one Git setting the bridges honor. The same adversarial loop runs inside each tool as the read-only `auditor` agent, from a fresh context, with one shared charter. Review is recommended before a plan is approved and after implementation, and the permission files, the gate, and the bridges are where it earns its cost; nothing makes it mandatory, because a required review is a tax on trivial edits and teaches the agent to route around it.
+A second opinion is worth most when it comes from a different model family that reads the same files. The bridges give one read-only, offline, single-turn reviewer with no write, web, plugin, or subagent surface, launched from a scrubbed environment under a hard timeout. Hard-coded flags prevent callers from extending that authority. Unset repository consent permits review; a configured value must be literal `true`, so empty or malformed opt-outs cannot become accidental disclosure grants. A finite scanner supports, but does not replace, that disclosure decision.
+
+Temporary review artifacts belong to a private caller-selected `TMPDIR`, not the whole temp tree. Scanned artifacts are inlined, separating broad non-secret diagnostic reads from artifact disclosure and eliminating any reviewer scratch-write need. The scanner's `--` separator prevents artifact names from becoming root options. Safe returned provenance reports effective model, effort, tier, and client version only where exposed; `unknown` is more useful than asserting a configured preference was used.
+
+The in-tool auditor roles remain separately configured. Review is recommended where it earns its cost, not mandatory for every trivial edit.
 
 ## One neutral source
 
@@ -25,6 +29,8 @@ Guidance and skills live once, under `~/.agents`, the home of the Agent Skills f
 ## The gate contract
 
 Skills read a target contract instead of per-repository prose: `lint` and `check` are the repository checks, `restow` and `verify` the host verification, `verify-published` the post-push check. A repository declares a gate by defining the target, host-bound targets refuse on the wrong host or clone, and Make targets and npm scripts of the same name are equivalent. The commit skill therefore needs no knowledge of any repository.
+
+Combine compatible Make goals so prerequisites run once. Reuse elsewhere is conditional on re-reading original passing evidence and checking exact source and relevant context, not a generic persistent cache. Review-brief source/index fingerprints expose drift and unsupported inputs without staging or claiming Git-tree equality; runtime, ignored dependencies and host state still need independent validation. Failed gates keep useful scanned diagnostics but return failure; plan-only briefs never run gates.
 
 ## Two hosts
 

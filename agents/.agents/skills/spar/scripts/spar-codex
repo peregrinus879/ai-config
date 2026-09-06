@@ -14,7 +14,7 @@
 # runtime may not resolve inside the repository under review. The request and
 # each artifact pass the payload scanner, which inlines the artifacts into one
 # prompt sent on stdin; artifacts must live under the repository (outside
-# .git) or the temp root. The reply arrives on stdout; the thread id arrives
+# .git) or a private TMPDIR. The reply arrives on stdout; the thread id arrives
 # on stderr as "SPAR-BRIDGE ID: <thread-id>". Every stowed host consents to
 # disclosure by default; the bridge refuses where `git config spar.consent` is
 # set to anything but true, which records H's decision that the repository's
@@ -82,19 +82,28 @@ repo=$(realpath -e -- "$repo") || abort "cannot resolve the repository root"
 [[ $repo != *'"'* && $repo != *"'"* && $repo != *\\* && $repo != *'*'* && $repo != *'?'* &&
   $repo != *'['* && $repo != *']'* && $repo != *[[:cntrl:]]* ]] ||
   abort "the repository path cannot be represented safely in the reviewer profile"
-consent=$(git config --get spar.consent 2>/dev/null || true)
-[[ -z $consent || $consent == true ]] ||
-  abort "spar.consent is '$consent' for this repository; only unset or true allows disclosure"
+consent_status=0
+consent=$(git config --get spar.consent 2>/dev/null && printf '.') || consent_status=$?
+[[ $consent_status == 1 || ( $consent_status == 0 && $consent == $'true\n.' ) ]] ||
+  abort "spar.consent must be unset or literal true; empty values and lookup errors refuse disclosure"
 [[ $reviewer != "$repo/"* ]] || abort "the codex runtime resolves inside the repository under review"
 
 # Scan, confine, and assemble the prompt before any reviewer process starts;
-# artifacts must sit under the repository or a temp root.
+# No broad temp disclosure grant: the caller names its private scratch in TMPDIR.
+scan_args=(outbound --root "$repo")
+[[ -z ${TMPDIR:-} ]] || scan_args+=(--scratch-root "$TMPDIR")
 prompt=$(printf '%s\n\n%s' "$SYSTEM_PROMPT" "$request" |
-  "$scanner" outbound --root "$repo" --root /tmp --root /var/tmp "$@") ||
+  "$scanner" "${scan_args[@]}" -- "$@") ||
   abort "the request or an artifact failed the outbound content scan"
 
 # Every reviewer process starts from a scrubbed environment.
 scrubbed=(/usr/bin/env -i -C "$repo" HOME="$account_home" PATH="$PATH" TERM="${TERM:-dumb}" LANG="${LANG:-C.UTF-8}")
+clientversion=$("${scrubbed[@]}" timeout --kill-after=2 10 "$reviewer" --version 2>/dev/null) || clientversion=unknown
+if [[ $clientversion =~ ^codex-cli\ ([0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6})$ ]]; then
+  clientversion=${BASH_REMATCH[1]}
+else
+  clientversion=unknown
+fi
 
 # Subscription authentication only.
 [[ $("${scrubbed[@]}" timeout --kill-after=2 30 "$reviewer" login status 2>&1) == "Logged in using ChatGPT"* ]] ||
@@ -108,7 +117,11 @@ profile+='"**/.env"="deny","**/.env.*"="deny","**/secrets"="deny","**/secrets/**
 profile+='"**/*.key"="deny","**/*.pem"="deny","**/*.p12"="deny","**/*.pfx"="deny",'
 profile+='"**/credentials"="deny","**/credentials.*"="deny","**/auth.json"="deny",'
 profile+='"**/.netrc"="deny","**/.npmrc"="deny","**/.pypirc"="deny",'
-profile+='"**/id_rsa"="deny","**/id_dsa"="deny","**/id_ecdsa"="deny","**/id_ed25519"="deny"'
+profile+='"**/id_rsa"="deny","**/id_dsa"="deny","**/id_ecdsa"="deny","**/id_ed25519"="deny",'
+profile+='"**/.aws"="deny","**/.ssh"="deny","**/.gnupg"="deny","**/.kube"="deny","**/.mozilla"="deny",'
+profile+='"**/.config/BraveSoftware"="deny","**/.config/chromium"="deny","**/.local/share/keyrings"="deny",'
+profile+='"**/.claude/.credentials.json"="deny","**/.codex/auth.json"="deny","**/.config/gh/hosts.yml"="deny",'
+profile+='"**/.docker/config.json"="deny","**/.local/share/opencode/auth.json"="deny","**/.bash_history"="deny","**/.zsh_history"="deny"'
 profile+='}},network={enabled=false}}'
 
 args=(
@@ -203,5 +216,8 @@ reply=$(jq -cR 'fromjson? | select(.type == "item.completed" and .item.type == "
 [[ -n $reply ]] || fail_reviewer "the reviewer ended without a reply"
 printf '%s' "$reply" | "$scanner" reply >/dev/null || abort "the reply failed the inbound content scan"
 
-[[ -z $thread ]] || diagnose "SPAR-BRIDGE ID: $thread"
+[[ ! $thread =~ $UUID_RE ]] || diagnose "SPAR-BRIDGE ID: $thread"
+# codex exec JSON exposes no effective model, effort, or tier.
+# Do not substitute overrides or inspect persistent session/auth state.
+diagnose "SPAR-BRIDGE PROVENANCE: {\"model\":\"unknown\",\"effort\":\"unknown\",\"tier\":\"unknown\",\"clientversion\":\"$clientversion\"}"
 printf '%s\n' "$reply"

@@ -2,13 +2,15 @@
 """Bound, scan, and assemble spar reviewer payloads without exposing rejected bytes.
 
 Modes:
-  outbound [--root DIR]... [artifact-file...]  read the review request on
+  outbound [--root DIR]... [--scratch-root DIR] -- [artifact-file...]  read the review request on
       stdin, read each artifact file, reject credential-shaped values and
       sensitive diff paths in any of them, and write the assembled prompt
       (request followed by one delimited section per artifact) on stdout. Every
       artifact must canonicalize under one of the roots, must not sit under a
-      sensitive or Git-internal component relative to that root, and must be a
-      regular, single-link file owned by the current user.
+      sensitive or Git-internal component, and must be a regular, single-link
+      file owned by the current user. A scratch root must be a private owned
+      directory below a temp root, not a shared tool root. Other tool sessions
+      are excluded unless the artifact is inside that explicit caller scratch.
   reply  read a reviewer reply on stdin and reject credential-shaped values
   diff   read a Git diff on stdin and reject credential-shaped values and
       sensitive diff paths; the commit and publish skills run it over staged
@@ -132,9 +134,16 @@ def sensitive_path(value: str) -> bool:
             or re.fullmatch(r"auth\.json(?:[._~-].*)?", name)
             or re.fullmatch(r"\.(?:netrc|npmrc|pypirc)(?:[._~-].*)?", name)
             or re.fullmatch(r"id_(?:rsa|dsa|ecdsa|ed25519)(?:[._~-].*)?", name)
+            or name in (".aws", ".ssh", ".gnupg", ".kube", ".mozilla", ".bash_history", ".zsh_history")
         )
 
-    return any(sensitive_component(part) for part in value.lower().split("/"))
+    path = "/" + value.lower().strip("/") + "/"
+    return any(sensitive_component(part) for part in path.split("/")) or any(
+        "/" + store + "/" in path for store in (
+            ".config/bravesoftware", ".config/chromium", ".local/share/keyrings",
+            ".claude/.credentials.json", ".config/gh/hosts.yml", ".docker/config.json",
+        )
+    )
 
 
 def unquote_git_path(value: str) -> str:
@@ -258,20 +267,23 @@ def enforce(findings: list[Finding]) -> None:
     reject(findings[0].label, findings[0].rule)
 
 
-def confine_artifact(path: str, roots: list[str], label: str) -> str:
-    """Return the artifact's canonical path if it sits under a root and no
-    component relative to that root is sensitive or Git-internal."""
+def confine_artifact(path: str, roots: list[str], label: str, scratch: str | None = None) -> str:
+    """Confine both the lexical and resolved paths before opening any content."""
     try:
         canonical = os.path.realpath(path, strict=True)
     except OSError:
         reject(label, "artifact does not exist")
-    for root in roots:
+    # A copied store must not become readable by selecting it as a root.
+    for candidate in (os.path.abspath(path), canonical):
+        if ".git" in candidate.split("/") or sensitive_path(candidate):
+            reject(label, "artifact sits under a sensitive or Git-internal path")
+        if re.match(r"^/(?:var/)?tmp/(?:opencode|claude-[^/]+|codex[^/]*)/", candidate):
+            if scratch is None or not candidate.startswith(scratch + "/"):
+                reject(label, "artifact belongs to another tool session, not caller scratch")
+    for root in [*roots, *([scratch] if scratch else [])]:
         if canonical.startswith(root + "/"):
-            relative = canonical[len(root) + 1 :]
-            if ".git" in relative.split("/") or sensitive_path(relative):
-                reject(label, "artifact sits under a sensitive or Git-internal path")
             return canonical
-    reject(label, "artifact must live under the repository or the temp root")
+    reject(label, "artifact must live under the repository or a private caller scratch root")
 
 
 def read_artifact(path: str, label: str) -> bytes:
@@ -301,17 +313,33 @@ def read_artifact(path: str, label: str) -> bytes:
 def scan_outbound(arguments: list[str]) -> None:
     roots: list[str] = []
     artifacts: list[str] = []
+    scratch = None
     while arguments:
-        if arguments[0] == "--root" and len(arguments) >= 2:
+        if arguments[0] == "--":
+            artifacts = arguments[1:]
+            break
+        if arguments[0] in ("--root", "--scratch-root") and len(arguments) >= 2:
             try:
-                roots.append(os.path.realpath(arguments[1], strict=True))
+                root = os.path.realpath(arguments[1], strict=True)
+                metadata = os.stat(root)
             except OSError:
                 reject("root", "artifact root does not exist")
+            if not stat.S_ISDIR(metadata.st_mode) or root == "/":
+                reject("root", "artifact root must be a non-root directory")
+            if arguments[0] == "--scratch-root":
+                if (scratch is not None or not root.startswith(("/tmp/", "/var/tmp/"))
+                        or re.fullmatch(r"/(?:var/)?tmp/(?:opencode|claude-[^/]+|codex[^/]*)", root)
+                        or metadata.st_uid != os.getuid() or metadata.st_mode & 0o077
+                        or sensitive_path(root) or ".git" in root.split("/")):
+                    reject("root", "scratch root must be a private owned session directory under a temp root")
+                scratch = root
+            else:
+                roots.append(root)
             del arguments[:2]
         else:
-            artifacts.append(arguments.pop(0))
-    if artifacts and not roots:
-        reject("root", "artifacts require at least one --root")
+            reject("options", "expected --root, --scratch-root, or -- before artifact operands")
+    if artifacts and not (roots or scratch):
+        reject("root", "artifacts require --root or --scratch-root")
     request = sys.stdin.buffer.read(REQUEST_MAX + 1)
     if not request.strip():
         reject("request", "review request is empty")
@@ -323,7 +351,7 @@ def scan_outbound(arguments: list[str]) -> None:
     for index, path in enumerate(artifacts, start=1):
         label = f"artifact {index}"
         name = os.path.basename(path)
-        canonical = confine_artifact(path, roots, label)
+        canonical = confine_artifact(path, roots, label, scratch)
         data = read_artifact(canonical, label)
         total += len(data)
         if total > TOTAL_MAX:
@@ -359,7 +387,7 @@ def main() -> None:
     if len(sys.argv) == 2 and sys.argv[1] == "diff":
         scan_stream("diff", True)
         return
-    print("usage: spar-payload-scan outbound [--root DIR]... [artifact-file...] | reply | diff", file=sys.stderr)
+    print("usage: spar-payload-scan outbound [--root DIR]... [--scratch-root DIR] -- [artifact-file...] | reply | diff", file=sys.stderr)
     raise SystemExit(64)
 
 

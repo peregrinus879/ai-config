@@ -100,6 +100,7 @@ test:
 	python3 tests/config-contracts.py
 	bash tests/statusline.sh
 	bash tests/prepare-stow.sh
+	bash tests/review-brief.sh
 	bash tests/spar-bridges.sh
 	bash tests/commit-gate.sh
 	bash tests/canary.sh

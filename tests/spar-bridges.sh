@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Behavioral checks for the spar reviewer bridges and payload scanner. Reviewer
-# CLIs are shimmed outside the temp roots (the bridges refuse executables
-# there) and configured through a file, not the environment, because the
-# bridges scrub the reviewer's environment. Fixtures that must look like
+# CLIs and fake HOME stay under one private scratch directory. Fixture copies
+# of the bridges admit only the exact fixture paths and use the fake account
+# home; the unchanged production runtime rejection is tested separately.
+# Fixtures that must look like
 # credentials are assembled at runtime so the repository itself stays scannable.
 set -euo pipefail
 
@@ -10,22 +11,72 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 CLAUDE_BRIDGE="$ROOT/agents/.agents/skills/spar/scripts/spar-claude"
 CODEX_BRIDGE="$ROOT/agents/.agents/skills/spar/scripts/spar-codex"
 SCANNER="$ROOT/agents/.agents/skills/spar/scripts/spar-payload-scan"
-TMP=$(mktemp -d)
-mkdir -p "$HOME/.cache"
-HOMEBOX=$(mktemp -d -p "$HOME/.cache" eyragents-tests.XXXXXX)
+WORK=$(mktemp -d)
+TMP="$WORK/session"
+HOMEBOX="$WORK/home"
+export HOME="$HOMEBOX" TMPDIR="$TMP"
+export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
 SHIMS="$HOMEBOX/bin"
-trap 'rm -rf -- "$TMP" "$HOMEBOX"' EXIT
-mkdir -p "$SHIMS" "$TMP/art"
-SCAN_OUT=("$SCANNER" outbound --root /tmp)
+trap 'rm -rf -- "$WORK"' EXIT
+mkdir -p "$SHIMS" "$TMP/art" "$WORK/bridges"
+chmod 700 "$TMP"
+chmod 755 "$TMP/art"
+SCAN_OUT=("$SCANNER" outbound --scratch-root "$TMP" --)
 
 fail() {
   printf 'FAIL: %s\n' "$1" >&2
   exit 1
 }
 
+expect_child_stopped() {
+  local file=$1 label=$2 child i
+  [[ -s $file ]] || return 0
+  child=$(<"$file")
+  # A group signal is asynchronous; allow bounded scheduling/reaping latency.
+  for ((i = 0; i < 40; i++)); do
+    kill -0 "$child" 2>/dev/null || return 0
+    sleep 0.05
+  done
+  fail "$label left a descendant after cleanup"
+}
+
+# Dependency injection lives only in these disposable copies, never in a
+# production environment flag or a writable runtime exemption.
+python3 - "$CLAUDE_BRIDGE" "$CODEX_BRIDGE" "$WORK/bridges" "$SHIMS" "$HOMEBOX" <<'PY'
+import pathlib, shlex, sys
+for source in sys.argv[1:3]:
+    text = pathlib.Path(source).read_text()
+    needle = '  local root\n'
+    assert text.count(needle) == 1
+    shims = pathlib.Path(sys.argv[4])
+    text = text.replace(needle, needle + '  case $1 in ' + '|'.join(shlex.quote(str(shims / name)) for name in ('claude', 'codex', 'git')) + ') return 0 ;; esac\n')
+    needle = 'account_home=$(getent passwd "$(id -u)" | cut -d: -f6)'
+    assert text.count(needle) == 1
+    text = text.replace(needle, 'account_home=' + shlex.quote(sys.argv[5]))
+    target = pathlib.Path(sys.argv[3]) / pathlib.Path(source).name
+    target.write_text(text)
+    target.chmod(0o755)
+PY
+cp -- "$SCANNER" "$WORK/bridges/spar-payload-scan"
+PRODUCTION_CLAUDE=$CLAUDE_BRIDGE
+PRODUCTION_CODEX=$CODEX_BRIDGE
+CLAUDE_BRIDGE="$WORK/bridges/spar-claude"
+CODEX_BRIDGE="$WORK/bridges/spar-codex"
+
+cat >"$SHIMS/git" <<'SHIM'
+#!/usr/bin/env bash
+if [[ ${1:-} == config && ${2:-} == --get && -e $(dirname -- "$0")/consent-error ]]; then exit 5; fi
+exec /usr/bin/git "$@"
+SHIM
+chmod 755 "$SHIMS/git"
+
 cat >"$SHIMS/claude" <<'SHIM'
 #!/usr/bin/env bash
 source "$(dirname -- "$0")/shim.env"
+if [[ ${1:-} == --version ]]; then
+  if [[ $SPAR_TEST_MODE == bad-version ]]; then printf '%s\n' "$SPAR_TEST_REPLY"; else printf '2.1.261 (Claude Code)\n'; fi
+  exit
+fi
 [[ -z ${CLAUDE_CODE_EFFORT_LEVEL:-} ]] || exit 89
 [[ ${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-} == 1 && ${DISABLE_AUTOUPDATER:-} == 1 ]] || exit 88
 if [[ " $* " == *' auth status '* ]]; then
@@ -39,7 +90,10 @@ env >"$SPAR_TEST_CALLS.env"
 cat >"$SPAR_TEST_CALLS.stdin"
 session="33333333-3333-4333-8333-333333333333"
 case ${SPAR_TEST_MODE:-ok} in
-  ok) jq -cn --arg s "$session" '{type:"result",is_error:false,result:"review ok",session_id:$s}' ;;
+  ok|bad-version) jq -cn --arg s "$session" '{type:"result",is_error:false,result:"review ok",session_id:$s}' ;;
+  metadata) jq -cn --arg s "$session" --arg m "$SPAR_TEST_REPLY" '{type:"result",is_error:false,result:"review ok",session_id:$s,modelUsage:{($m):{}},usage:{service_tier:"standard"},model:"configured-not-effective",effort:"configured-not-effective"}' ;;
+  metadata-tier) jq -cn --arg s "$session" --arg t "$SPAR_TEST_REPLY" '{type:"result",is_error:false,result:"review ok",session_id:$s,modelUsage:{"claude-observed-fixture":{}},usage:{service_tier:$t}}' ;;
+  malformed-metadata) jq -cn --arg s "$session" --arg m "$SPAR_TEST_REPLY" '{type:"result",is_error:false,result:"review ok",session_id:$s,modelUsage:$m}' ;;
   reply) jq -cn --arg s "$session" --arg t "$SPAR_TEST_REPLY" '{type:"result",is_error:false,result:$t,session_id:$s}' ;;
   failure) printf 'reviewer failed while reading .env policy\n' >&2; exit 1 ;;
   error-result) jq -cn '{type:"result",is_error:true,result:"review failed"}' ;;
@@ -55,6 +109,10 @@ SHIM
 cat >"$SHIMS/codex" <<'SHIM'
 #!/usr/bin/env bash
 source "$(dirname -- "$0")/shim.env"
+if [[ ${1:-} == --version ]]; then
+  if [[ $SPAR_TEST_MODE == bad-version ]]; then printf '%s\n' "$SPAR_TEST_REPLY"; else printf 'codex-cli 0.153.4\n'; fi
+  exit
+fi
 if [[ ${1:-} == login && ${2:-} == status ]]; then
   printf 'Logged in using ChatGPT (fixture workspace)\n'
   exit
@@ -67,7 +125,7 @@ env >"$SPAR_TEST_CALLS.env"
 cat >"$SPAR_TEST_CALLS.stdin"
 thread="11111111-1111-4111-8111-111111111111"
 case ${SPAR_TEST_MODE:-ok} in
-  ok)
+  ok|bad-version)
     jq -cn --arg t "$thread" '{type:"thread.started",thread_id:$t}'
     jq -cn '{type:"item.completed",item:{type:"agent_message",text:"review ok"}}'
     jq -cn '{type:"turn.completed"}' ;;
@@ -114,6 +172,18 @@ printf 'Review.' | "${SCAN_OUT[@]}" "$TMP/art/spar-plan.md" >"$TMP/out" || fail 
 [[ $(<"$TMP/out") == *'===== artifact: spar-plan.md ====='*'plan body'*'===== end artifact: spar-plan.md ====='* ]] ||
   fail "scanner did not inline the artifact with delimiters"
 if printf 'Review.' | "$SCANNER" outbound "$TMP/art/spar-plan.md" >/dev/null 2>&1; then fail "artifact accepted without a root"; fi
+printf 'operand, not an option\n' >"$TMP/art/--root"
+printf 'Review.' | "${SCAN_OUT[@]}" "$TMP/art/--root" >/dev/null || fail "scanner treated an operand as an option"
+if [[ $TMP == /tmp/opencode/* || $TMP == /tmp/claude-*/* || $TMP == /tmp/codex*/* ]]; then
+  if printf 'Review.' | "$SCANNER" outbound --root "$TMP" -- "$TMP/art/spar-plan.md" >/dev/null 2>&1; then
+    fail "scanner accepted another tool session through a broad root rather than caller scratch"
+  fi
+fi
+for scratch in /tmp /var/tmp /tmp/opencode "$TMP/art"; do
+  if printf 'Review.' | "$SCANNER" outbound --scratch-root "$scratch" -- >/dev/null 2>&1; then
+    fail "scanner accepted a shared or non-private scratch root: $scratch"
+  fi
+done
 
 if printf '' | "$SCANNER" outbound >/dev/null 2>&1; then fail "empty request passed scanner"; fi
 printf 'binary\0content' >"$TMP/art/payload.bin"
@@ -249,94 +319,23 @@ while IFS= read -r -d '' tracked; do
     fail "the repository's own tracked content fails the outbound scan: $tracked"
 done < <(git -C "$ROOT" ls-files -z)
 
-# --- Brief ---
-# review-brief assembles the artifact from evidence: the intent's required
-# lines, the repository state, the gates as run, and the change; it is scanned
-# before it is kept and confined to the repository or the temp root.
-BRIEF="$ROOT/agents/.agents/skills/spar/scripts/review-brief"
-brepo="$TMP/brief-repo"
-git init -q "$brepo"
-git -C "$brepo" config user.name tester
-git -C "$brepo" config user.email tester@example.invalid
-printf 'lint:\n\t@echo lint-ran\ncheck:\n\t@echo check-broke; exit 3\n' >"$brepo/Makefile"
-printf 'one\n' >"$brepo/a.txt"
-git -C "$brepo" add Makefile a.txt
-git -C "$brepo" commit -q -m first
-printf 'two\n' >>"$brepo/a.txt"
-git -C "$brepo" add a.txt
-git -C "$brepo" commit -q -m second
-printf 'three\n' >>"$brepo/a.txt"
-git -C "$brepo" add a.txt
-printf 'Outcome: a.txt gains a line\nNon-goals: none\nConstraints: none\nAcceptance: the line is present\n' >"$TMP/art/intent.md"
-run_brief() {
-  BRIEF_RC=0
-  (cd "$brepo" && "$BRIEF" "$@") >"$TMP/brief.out" 2>"$TMP/brief.err" || BRIEF_RC=$?
-}
-
-run_brief --intent "$TMP/art/intent.md" --out "$TMP/art/brief.md"
-[[ $BRIEF_RC == 0 ]] || fail "review-brief failed on a staged change: $(<"$TMP/brief.err")"
-brief=$(<"$TMP/art/brief.md")
-for part in '## Intent' 'Outcome: a.txt gains a line' '## Repository state' '- head: ' ' second' '## Gates' \
-  '- ran on: the working tree, which equals the index' '- lint: ok' '- check: FAIL (make exit 2)' 'check-broke' \
-  '## Change: staged index against HEAD' '+three'; do
-  [[ $brief == *"$part"* ]] || fail "review-brief omitted: $part"
-done
-[[ $(<"$TMP/brief.out") == 'brief: '*'staged index against HEAD)' ]] || fail "review-brief did not report the artifact"
-
-run_brief --intent "$TMP/art/intent.md" --out "$TMP/art/brief-range.md" --range HEAD~1..HEAD --no-gates
-[[ $BRIEF_RC == 0 ]] || fail "review-brief failed on a range: $(<"$TMP/brief.err")"
-brief=$(<"$TMP/art/brief-range.md")
-[[ $brief == *'## Change: commits HEAD~1..HEAD'*' second'*'+two'* && $brief == *'skipped by --no-gates'* && $brief != *'+three'* ]] ||
-  fail "review-brief range brief is wrong"
-
-run_brief --intent "$TMP/art/intent.md" --out "$TMP/art/brief-wt.md" --worktree --gate lint --gate nosuch
-brief=$(<"$TMP/art/brief-wt.md")
-[[ $BRIEF_RC == 0 && $brief == *'## Change: working tree against HEAD'* && $brief == *'- lint: ok'* && $brief != *'- check:'* ]] ||
-  fail "review-brief worktree brief or --gate selection is wrong"
-[[ $brief == *'- nosuch: absent (no such target)'* ]] || fail "review-brief did not report a missing gate target as absent"
-
-run_brief --intent "$TMP/art/intent.md" --out "$TMP/art/brief-plan.md" --plan --gate lint
-brief=$(<"$TMP/art/brief-plan.md")
-[[ $BRIEF_RC == 0 && $brief == *'## Change: none, plan review'* && $brief == *'- lint: ok'* && $brief == *'carries changes beyond HEAD'* && $brief != *'Stat:'* ]] ||
-  fail "review-brief plan mode is wrong: $(<"$TMP/brief.err")"
-
-run_brief --intent "$TMP/art/intent.md" --out "$brepo/brief-in-repo.md" --no-gates
-[[ $BRIEF_RC == 0 && -f $brepo/brief-in-repo.md ]] || fail "review-brief refused an output under the repository: $(<"$TMP/brief.err")"
-run_brief --intent "$TMP/art/intent.md" --out "$brepo/brief-in-repo.md" --no-gates
-[[ $BRIEF_RC == 64 && $(<"$TMP/brief.err") == *'written as a new file only'* ]] || fail "review-brief overwrote an existing file"
-run_brief --intent "$TMP/art/intent.md" --out "$brepo/.git/brief.md" --no-gates
-[[ $BRIEF_RC == 64 && ! -e $brepo/.git/brief.md ]] || fail "review-brief wrote under Git internals"
-
-printf 'harmless\n' >"$brepo/.env"
-git -C "$brepo" add .env
-run_brief --intent "$TMP/art/intent.md" --out "$TMP/art/leaky-path.md" --no-gates
-[[ $BRIEF_RC == 2 && ! -e $TMP/art/leaky-path.md ]] || fail "review-brief kept a brief whose diff carries a sensitive path"
-git -C "$brepo" restore --staged .env
-rm -f -- "$brepo/.env"
-
-printf 'Outcome: x\nConstraints: y\n' >"$TMP/art/thin.md"
-run_brief --intent "$TMP/art/thin.md" --out "$TMP/art/thin-brief.md"
-[[ $BRIEF_RC == 64 && ! -e $TMP/art/thin-brief.md && $(<"$TMP/brief.err") == *'Non-goals Acceptance'* ]] ||
-  fail "review-brief accepted an intent without its required lines"
-
-run_brief --intent "$TMP/art/intent.md" --out "$HOMEBOX/outside-brief.md" --no-gates
-[[ $BRIEF_RC == 64 && ! -e $HOMEBOX/outside-brief.md ]] || fail "review-brief wrote outside the repository and temp roots"
-
-printf 'Outcome: x\nNon-goals: y\nConstraints: z\nAcceptance: %s=%s\n' "$key_name" "$token" >"$TMP/art/leaky.md"
-run_brief --intent "$TMP/art/leaky.md" --out "$TMP/art/leaky-brief.md" --no-gates
-[[ $BRIEF_RC == 2 && ! -e $TMP/art/leaky-brief.md ]] || fail "review-brief kept a brief with a credential-shaped value"
-[[ -z $(find "$TMP/art" -name '.review-brief.*') ]] || fail "review-brief left a draft behind"
-
-git -C "$brepo" restore --staged a.txt
-run_brief --intent "$TMP/art/intent.md" --out "$TMP/art/empty-brief.md" --no-gates
-[[ $BRIEF_RC == 3 && ! -e $TMP/art/empty-brief.md && $(<"$TMP/brief.err") == *'nothing is staged'* ]] ||
-  fail "review-brief accepted an empty staged change"
-
 # --- Bridges ---
 repo="$TMP/repo"
 git init -q "$repo"
+for bridge in "$PRODUCTION_CLAUDE" "$PRODUCTION_CODEX"; do
+  rc=0
+  PATH="$SHIMS:$PATH" /usr/bin/env -C "$repo" "$bridge" review 'Refuse planted runtime.' >"$TMP/out" 2>"$TMP/err" || rc=$?
+  [[ $rc == 2 && $(<"$TMP/err") == *'resolves under a temp root'* ]] || fail "production bridge admitted a temp runtime"
+done
 printf 'harmless\n' >"$repo/README.md"
 printf 'in-repo artifact\n' >"$repo/notes.md"
+# Generator semantics live in review-brief.sh. Exercise the generated artifact's
+# handoff to both mocked reviewers in the ordinary review below, without gates.
+git -C "$repo" add README.md notes.md
+git -C "$repo" -c user.name=Fixture -c user.email=fixture@example.invalid commit -qm 'bridge fixture'
+printf 'Outcome: review bridge fixture\nNon-goals: deployment\nConstraints: offline\nAcceptance: intact brief\n' >"$TMP/art/intent.md"
+/usr/bin/env -C "$repo" "$ROOT/agents/.agents/skills/spar/scripts/review-brief" \
+  --intent "$TMP/art/intent.md" --out "$TMP/art/brief.md" --plan >"$TMP/brief.out"
 mkdir -p "$repo/secrets"
 printf 'harmless\n' >"$repo/secrets/ordinary.md"
 run_bridge() { # bridge mode calls-file [bridge args...]
@@ -352,7 +351,7 @@ for bridge in "$CLAUDE_BRIDGE" "$CODEX_BRIDGE"; do
   name=${bridge##*/}
   calls="$TMP/calls-$name"
 
-  for value in false maybe True; do
+  for value in false maybe True '' ' true' $'true\n'; do
     git -C "$repo" config spar.consent "$value"
     run_bridge "$bridge" ok "$calls" "Review after opt-out."
     [[ $BRIDGE_RC == 2 && ! -e $calls && $(<"$calls.err") == *'spar.consent'* ]] ||
@@ -363,22 +362,31 @@ for bridge in "$CLAUDE_BRIDGE" "$CODEX_BRIDGE"; do
   GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=spar.consent GIT_CONFIG_VALUE_0=true run_bridge "$bridge" ok "$calls" "Review with an environment override."
   [[ $BRIDGE_RC == 2 && ! -e $calls ]] || fail "$name let a Git environment variable override the opt-out"
   git -C "$repo" config --unset spar.consent
+  touch "$SHIMS/consent-error"
+  run_bridge "$bridge" ok "$calls" "Refuse a consent lookup error after successful repository discovery."
+  [[ $BRIDGE_RC == 2 && ! -e $calls && $(<"$calls.err") == *'spar.consent'* ]] || fail "$name accepted a failed consent lookup"
+  rm -- "$SHIMS/consent-error"
   git -C "$repo" config spar.consent true
   run_bridge "$bridge" ok "$calls" "Review with explicit consent."
   [[ $BRIDGE_RC == 0 ]] || fail "$name refused explicit consent"
   git -C "$repo" config --unset spar.consent
 
-  GIT_EDITOR=true OPENAI_BASE_URL=sentinel ANTHROPIC_BASE_URL=sentinel SPAR_TEST_CANARY=leak TMPDIR="$HOME" \
-    run_bridge "$bridge" ok "$calls" "Review ordinary material." "$TMP/art/spar-plan.md" "$repo/notes.md"
+  GIT_EDITOR=true OPENAI_BASE_URL=sentinel ANTHROPIC_BASE_URL=sentinel SPAR_TEST_CANARY=leak \
+    run_bridge "$bridge" ok "$calls" "Review ordinary material." "$TMP/art/spar-plan.md" "$repo/notes.md" "$TMP/art/brief.md"
   [[ $BRIDGE_RC == 0 && $(<"$calls.out") == 'review ok' ]] || fail "$name failed an ordinary review: $(<"$calls.err")"
   [[ $(<"$calls.err") == *'SPAR-BRIDGE ID: '* ]] || fail "$name did not report the reviewer id"
+  [[ $(<"$calls.err") == *'"model":"unknown","effort":"unknown","tier":"unknown","clientversion":"'* ]] ||
+    fail "$name inferred effective metadata from configuration"
   [[ $(<"$calls.pwd") == "$repo" ]] || fail "$name did not launch from the repository root"
   [[ $(<"$calls.stdin") == *'Review ordinary material.'*'===== artifact: spar-plan.md ====='*'plan body'*'===== artifact: notes.md ====='* ]] ||
     fail "$name did not send the scanned prompt with the inlined artifacts on stdin"
+  [[ $(<"$calls.stdin") == *'===== artifact: brief.md ====='*"$(<"$TMP/art/brief.md")"*'===== end artifact: brief.md ====='* ]] ||
+    fail "$name did not relay the complete generated brief with artifact delimiters"
   ! grep -qE '^(OPENAI_BASE_URL|ANTHROPIC_BASE_URL|SPAR_TEST_CANARY|GIT_EDITOR|TMPDIR)=' "$calls.env" ||
     fail "$name passed caller environment to the reviewer"
   grep -qE '^HOME=' "$calls.env" || fail "$name scrubbed HOME from the reviewer"
   args=$(<"$calls")
+  cp -- "$calls.argv" "$TMP/$name.argv"
   mapfile -d '' argv <"$calls.argv"
   if [[ $name == spar-claude ]]; then
     for flag in '--tools Read,Glob,Grep' '--permission-mode dontAsk' '--safe-mode' '--setting-sources=' \
@@ -421,9 +429,16 @@ for bridge in "$CLAUDE_BRIDGE" "$CODEX_BRIDGE"; do
   fi
   [[ $args != *'/var/tmp/spar-'* ]] || fail "$name still references a handoff directory"
 
-  TMPDIR="$HOME" run_bridge "$bridge" ok "$calls" "Review an outside artifact." "$HOMEBOX/outside.md"
-  [[ $BRIDGE_RC == 2 && ! -e $calls && $(<"$calls.err") == *'temp root'* ]] ||
+  run_bridge "$bridge" ok "$calls" "Review an outside artifact." "$HOMEBOX/outside.md"
+  [[ $BRIDGE_RC == 2 && ! -e $calls && $(<"$calls.err") == *'scratch'* ]] ||
     fail "$name accepted an artifact outside the repository and temp roots"
+  run_bridge "$bridge" ok "$calls" "Do not expand roots." --root "$HOMEBOX" "$HOMEBOX/outside.md"
+  [[ $BRIDGE_RC == 2 && ! -e $calls ]] || fail "$name accepted caller scanner options"
+  printf '\n[broken\n' >>"$repo/.git/config"
+  run_bridge "$bridge" ok "$calls" "Refuse config lookup errors."
+  [[ $BRIDGE_RC == 2 && ! -e $calls ]] || fail "$name accepted a Git configuration error"
+  git config --file "$repo/.git/config.new" core.repositoryformatversion 0
+  mv -- "$repo/.git/config.new" "$repo/.git/config"
   for path in "$repo/.git/HEAD" "$repo/secrets/ordinary.md"; do
     run_bridge "$bridge" ok "$calls" "Review a confined path." "$path"
     [[ $BRIDGE_RC == 2 && ! -e $calls ]] || fail "$name accepted an artifact under a sensitive or Git-internal path: $path"
@@ -456,9 +471,28 @@ for bridge in "$CLAUDE_BRIDGE" "$CODEX_BRIDGE"; do
     fail "$name relayed a credential-shaped reply"
   SPAR_TEST_REPLY='The .env path is denied.' run_bridge "$bridge" reply "$calls" "Review prose."
   [[ $BRIDGE_RC == 0 && $(<"$calls.out") == 'The .env path is denied.' ]] || fail "$name rejected sensitive-path prose"
+  SPAR_TEST_REPLY="$token" run_bridge "$bridge" bad-version "$calls" "Review unsafe version metadata."
+  [[ $BRIDGE_RC == 0 && $(<"$calls.err") != *"$token"* && $(<"$calls.err") == *'"clientversion":"unknown"'* ]] ||
+    fail "$name leaked or inferred malformed version metadata"
   if [[ $name == spar-codex ]]; then
     run_bridge "$bridge" multi "$calls" "Review in parts."
     [[ $BRIDGE_RC == 0 && $(<"$calls.out") == *'part one'*'part two'* ]] || fail "$name dropped an earlier reviewer message"
+  else
+    SPAR_TEST_REPLY=claude-observed-fixture run_bridge "$bridge" metadata "$calls" "Review metadata."
+    [[ $BRIDGE_RC == 0 && $(<"$calls.err") == *'"model":"claude-observed-fixture","effort":"unknown","tier":"standard","clientversion":"2.1.261"'* ]] ||
+      fail "$name lost observed safe provenance"
+    for value in $'claude-fixture\nunexpected text' $'claude-fixture\n' "$(printf 'claude-fixture\n%0200d' 0)"; do
+      SPAR_TEST_REPLY="$value" run_bridge "$bridge" metadata "$calls" "Review multiline model metadata."
+      [[ $BRIDGE_RC == 0 && $(<"$calls.err") == *'"model":"unknown"'* ]] || fail "$name retained a multiline model identifier"
+      SPAR_TEST_REPLY="$value" run_bridge "$bridge" metadata-tier "$calls" "Review multiline tier metadata."
+      [[ $BRIDGE_RC == 0 && $(<"$calls.err") == *'"tier":"unknown"'* ]] || fail "$name retained a multiline tier identifier"
+    done
+    SPAR_TEST_REPLY="$token" run_bridge "$bridge" metadata "$calls" "Review unsafe metadata."
+    [[ $BRIDGE_RC == 0 && $(<"$calls.err") != *"$token"* && $(<"$calls.err") == *'"model":"unknown"'* ]] ||
+      fail "$name leaked unsafe metadata"
+    SPAR_TEST_REPLY="$token" run_bridge "$bridge" malformed-metadata "$calls" "Review malformed metadata."
+    [[ $BRIDGE_RC == 0 && $(<"$calls.err") != *"$token"* && $(<"$calls.err") == *'"model":"unknown"'* ]] ||
+      fail "$name leaked a metadata parser diagnostic"
   fi
 
   run_bridge "$bridge" limit "$calls" "Review limit."
@@ -477,9 +511,7 @@ for bridge in "$CLAUDE_BRIDGE" "$CODEX_BRIDGE"; do
     >"$calls.out" 2>"$calls.err" || rc=$?
   [[ $rc == 124 && $(<"$calls.err") == *'SPAR-BRIDGE TIMEOUT'* ]] || fail "$name did not classify a timeout"
   (( $(date +%s) - start <= 8 )) || fail "$name timeout was not bounded"
-  if [[ -s $child_pid_file ]] && kill -0 "$(<"$child_pid_file")" 2>/dev/null; then
-    fail "$name left a descendant after timeout"
-  fi
+  expect_child_stopped "$child_pid_file" "$name timeout"
 
   rm -f -- "$child_pid_file" "$calls"
   configure_shims hang "$calls" "" "$child_pid_file"
@@ -490,10 +522,9 @@ for bridge in "$CLAUDE_BRIDGE" "$CODEX_BRIDGE"; do
   rc=0
   wait "$bridge_pid" || rc=$?
   [[ $rc == 130 ]] || fail "$name did not return 130 after TERM"
-  if [[ -s $child_pid_file ]] && kill -0 "$(<"$child_pid_file")" 2>/dev/null; then
-    fail "$name left a descendant after TERM"
-  fi
+  expect_child_stopped "$child_pid_file" "$name TERM"
   rc=0
 done
 
+SPAR_BRIDGE_FIXTURES="$TMP" env -u HOST_CODEX_CONFIG -u CONFIG_CONTRACT_ROOT python3 -B "$ROOT/tests/config-contracts.py"
 printf 'ok: spar bridges relay scanned one-pass reviews from a scrubbed environment and honor opt-out\n'

@@ -14,6 +14,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import runpy
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -402,4 +404,40 @@ for skill_dir in sorted([*(ROOT / "agents/.agents/skills").iterdir(), *(ROOT / "
     require(bool(fields.get("description")), f"skill lacks a description: {skill_dir.name}")
     require(set(fields) <= STANDARD_SKILL_FIELDS, f"skill uses non-standard frontmatter fields: {skill_dir.name}: {set(fields) - STANDARD_SKILL_FIELDS}")
 
+# One concrete path corpus exercises the scanner and effective permission
+# matchers, including store copies at the worktree root and at depth.
+scan = runpy.run_path(str(ROOT / "agents/.agents/skills/spar/scripts/spar-payload-scan"))
+corpus = [*(store + "/ordinary.txt" for store in PROJECT_STORE_DIRECTORIES), *PROJECT_STORE_FILES,
+          *(shape.replace("*", "fixture") for shape in CREDENTIAL_SHAPES if shape != "secrets/**"), "secrets/ordinary.txt"]
+safe_paths = ("README.md", "credentials-policy.md", "example.env", "docs/authentication.md", ".config/gh-policy.md")
+bridge_fixtures = os.environ.get("SPAR_BRIDGE_FIXTURES")
+if bridge_fixtures:
+    argv = (Path(bridge_fixtures) / "spar-claude.argv").read_bytes().decode().rstrip("\0").split("\0")
+    bridge_claude = json.loads(argv[argv.index("--settings") + 1])["permissions"]["deny"]
+    argv = (Path(bridge_fixtures) / "spar-codex.argv").read_bytes().decode().rstrip("\0").split("\0")
+    profile = next(arg for arg in argv if arg.startswith("permissions.spar-reviewer="))
+    bridge_codex = tomllib.loads(profile)["permissions"]["spar-reviewer"]["filesystem"][":workspace_roots"]
+
+    def path_glob(subject: str, pattern: str) -> bool:
+        # Claude path globs and Codex workspace globs match **/ at zero depth.
+        expression = re.escape(pattern).replace(r"\*\*/", "(?:.*/)?").replace(r"\*\*", ".*").replace(r"\*", "[^/]*")
+        return re.fullmatch(expression, subject) is not None
+
+for prefix in ("", "copy/deep/"):
+    for name, denied in [(name, True) for name in corpus] + [(name, False) for name in safe_paths]:
+        subject = prefix + name
+        require(scan["sensitive_path"](subject) == denied, f"scanner path corpus mismatch: {subject}")
+        if bridge_fixtures:
+            claude_denied = any(rule.startswith("Read(./") and path_glob(subject, rule[7:-1]) for rule in bridge_claude)
+            ancestors = ["/".join(subject.split("/")[:end]) for end in range(1, len(subject.split("/")) + 1)]
+            codex_denied = any(action == "deny" and any(path_glob(path, pattern) for path in ancestors) for pattern, action in bridge_codex.items())
+            require(claude_denied == denied, f"Claude bridge path corpus mismatch: {subject}")
+            require(codex_denied == denied, f"Codex bridge path corpus mismatch: {subject}")
+            fixture = Path(bridge_fixtures) / "corpus" / subject
+            fixture.parent.mkdir(parents=True, exist_ok=True)
+            fixture.write_text("ordinary synthetic fixture\n")
+            scanned = subprocess.run([str(ROOT / "agents/.agents/skills/spar/scripts/spar-payload-scan"),
+                                      "outbound", "--scratch-root", bridge_fixtures, "--", str(fixture)],
+                                     input="Review synthetic fixture.", capture_output=True, text=True)
+            require(scanned.returncode == (2 if denied else 0), f"scanner artifact corpus mismatch: {subject}")
 print("ok: configuration authority boundaries")

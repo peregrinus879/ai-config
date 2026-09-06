@@ -1,195 +1,321 @@
 #!/usr/bin/env bash
-# review-brief - assemble the artifact a reviewer reads, from evidence, not claims.
-#
-# Usage: review-brief --intent FILE --out FILE [--staged | --worktree | --range BASE..TIP | --plan]
-#                     [--gate TARGET]... [--no-gates]
-#
-# Runs inside a repository and writes one Markdown artifact that both the spar
-# bridges and the auditor agent take as their input: the intent file verbatim,
-# which must carry lines starting `Outcome:`, `Non-goals:`, `Constraints:`, and
-# `Acceptance:`; the repository state (branch, head, upstream, status); the gate
-# results as actually run, `make lint` and `make check` unless --gate names
-# other targets or --no-gates skips them, with a missing Makefile or target
-# reported as such and a failure's last lines quoted; and the change under
-# review with its stat: the index against HEAD by default, the working tree
-# against HEAD with --worktree, the commits and diff of a range, or none with
-# --plan, for a plan reviewed before any diff exists. The gates run on the
-# working tree, and the brief says whether that tree equals the index, the tip
-# under review, or HEAD. The artifact is scanned before it is kept: a
-# credential-shaped value anywhere in it, a sensitive path in the diff, or a
-# size, binary, or encoding limit of the scanner deletes it and fails. The
-# output must be a new file under the repository or under /tmp or /var/tmp,
-# the roots the bridges accept, never under a Git-internal or sensitive
-# component; it is written whole or not at all.
-#
-# Exit codes: 0 written, 2 scanner rejected (nothing kept), 3 repository state
-# refused, 64 usage.
+# review-brief - scanned, local evidence, never a persistent gate cache.
+# Usage: review-brief --intent FILE --out NEW_FILE
+#        [--staged | --worktree | --range BASE..TIP | --plan]
+#        [--gate LITERAL_MAKE_TARGET]... [--no-gates]
+# Plan mode never runs gates or writes in the repository. External artifacts
+# require the caller's private TMPDIR accepted by spar-payload-scan. Fingerprints
+# are read-only observations, not Git trees or attestations of runtime/host inputs.
+# Plan mode observes HEAD/index only, never source contents. Change modes stream
+# safe source hashes without artifact-size limits; sensitive source paths refuse.
+# Exit: 0 artifact written (may be explicitly unverified), 1 diagnostic artifact
+# retained for failed gates/source drift, 2 scanner/path refusal (no new artifact),
+# 3 repository/IO refusal, 64 usage/conflicts or existing output. No Git writes.
 set -euo pipefail
+exec /usr/bin/python3 -I - "$(realpath -e -- "${BASH_SOURCE[0]}")" "$@" <<'PY'
+import argparse
+import hashlib
+import json
+import os
+import re
+import runpy
+import shlex
+import stat
+import subprocess
+import sys
+from datetime import datetime, timezone
 
-usage() {
-  printf 'usage: review-brief --intent FILE --out FILE [--staged | --worktree | --range BASE..TIP | --plan] [--gate TARGET]... [--no-gates]\n' >&2
-  exit 64
-}
-fail() {
-  printf 'review-brief: %s\n' "$1" >&2
-  exit "${2:-3}"
-}
+scanner_path = os.path.join(os.path.dirname(sys.argv[1]), "spar-payload-scan")
+scan = runpy.run_path(scanner_path)
 
-intent="" out="" mode=staged range="" no_gates=0
-gates=()
-while (($#)); do
-  case $1 in
-    --intent) [[ $# -ge 2 ]] || usage; intent=$2; shift 2 ;;
-    --out) [[ $# -ge 2 ]] || usage; out=$2; shift 2 ;;
-    --staged) mode=staged; shift ;;
-    --worktree) mode=worktree; shift ;;
-    --range) [[ $# -ge 2 ]] || usage; mode=range; range=$2; shift 2 ;;
-    --plan) mode=plan; shift ;;
-    --gate) [[ $# -ge 2 ]] || usage; gates+=("$2"); shift 2 ;;
-    --no-gates) no_gates=1; shift ;;
-    *) usage ;;
-  esac
-done
-[[ -n $intent && -n $out ]] || usage
-intent=$(realpath -m -- "$intent")
-out=$(realpath -m -- "$out")
-fence=$'\x60\x60\x60'
 
-root=$(git rev-parse --show-toplevel 2>/dev/null) || fail 'not inside a Git repository'
-cd -- "$root"
-scanner=$(dirname -- "$(realpath -e -- "${BASH_SOURCE[0]}")")/spar-payload-scan
-[[ -x $scanner ]] || fail "the payload scanner is missing beside this script: $scanner"
+def fail(message, code=3):
+    print("review-brief: " + message, file=sys.stderr)
+    raise SystemExit(code)
 
-# The intent is the drafter's contract with the reviewer; its four fields are
-# what every review is judged against, so they are required, not suggested.
-[[ -f $intent && -s $intent ]] || fail "intent file missing or empty: $intent" 64
-missing=()
-for field in Outcome Non-goals Constraints Acceptance; do
-  grep -q -E "^${field}:" -- "$intent" || missing+=("$field")
-done
-((${#missing[@]} == 0)) || fail "the intent lacks a line starting with: ${missing[*]} (each as 'Field: ...')" 64
 
-# The artifact must sit where a bridge may read it, as a new file, and never
-# under a component the scanner or the Git-internals rule keeps closed.
-out_dir=$(realpath -m -- "$(dirname -- "$out")")
-case $out_dir/ in
-  "$root"/ | "$root"/*/ | /tmp/ | /tmp/*/ | /var/tmp/ | /var/tmp/*/) ;;
-  *) fail "the output must live under the repository, /tmp, or /var/tmp: $out" 64 ;;
-esac
-[[ -d $out_dir ]] || fail "output directory missing: $out_dir" 64
-[[ ! -e $out && ! -L $out ]] || fail "output exists; the brief is written as a new file only: $out" 64
-case /$out/ in
-  */.git/* | */secrets/* | */.env/ | */.env.*/) fail "the output may not sit under a Git-internal or sensitive component: $out" 64 ;;
-esac
-[[ $out != "$intent" ]] || fail 'the output and the intent are the same file' 64
+def git(*arguments):
+    result = subprocess.run(
+        ["git", "--no-pager", *arguments], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+    )
+    if result.returncode:
+        fail("read-only Git query failed; repository/ref state refused")
+    return result.stdout
 
-# Repository state, as evidence for the reviewer.
-git rev-parse --verify --quiet HEAD >/dev/null || fail 'the repository has no commit yet'
-branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || printf 'detached')
-head_line=$(git log -1 --format='%h %s')
-upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || printf 'none')
-status=$(git status --short)
 
-# The change under review.
-log=""
-case $mode in
-  staged)
-    title='staged index against HEAD'
-    stat=$(git diff --cached --stat)
-    diff=$(git diff --cached --no-ext-diff --no-color)
-    [[ -n $diff ]] || fail 'nothing is staged; use --worktree or --range for another change'
-    ;;
-  worktree)
-    title='working tree against HEAD'
-    stat=$(git diff --stat HEAD)
-    diff=$(git diff --no-ext-diff --no-color HEAD)
-    [[ -n $diff ]] || fail 'the working tree equals HEAD; nothing to review'
-    ;;
-  range)
-    [[ $range == *..* ]] || fail '--range takes BASE..TIP' 64
-    base=${range%%..*}
-    tip=${range#*..}
-    git rev-parse --verify --quiet "$base^{commit}" >/dev/null || fail "unknown base: $base"
-    git rev-parse --verify --quiet "$tip^{commit}" >/dev/null || fail "unknown tip: $tip"
-    git merge-base --is-ancestor "$base" "$tip" || fail "$base is not an ancestor of $tip"
-    title="commits $range"
-    log=$(git log --format='%h %s' "$base..$tip")
-    [[ -n $log ]] || fail "no commits in $range"
-    stat=$(git diff --stat "$base" "$tip")
-    diff=$(git diff --no-ext-diff --no-color "$base" "$tip")
-    ;;
-  plan)
-    title='none, plan review'
-    stat=""
-    diff=""
-    ;;
-esac
+def digest(data):
+    return hashlib.sha256(data).hexdigest()
 
-# The gates, run rather than reported. They run on the working tree, so the
-# brief says how that tree relates to the change under review.
-case $mode in
-  staged)
-    if git diff --quiet; then tree_note='the working tree, which equals the index'
-    else tree_note='the working tree, which differs from the index: the results cover a superset of the change'; fi
-    ;;
-  worktree) tree_note='the working tree, the change under review' ;;
-  plan)
-    if git diff --quiet && git diff --cached --quiet; then tree_note='the working tree, which equals HEAD'
-    else tree_note='the working tree, which carries changes beyond HEAD'; fi
-    ;;
-  range)
-    if [[ $(git rev-parse "$tip^{commit}") == "$(git rev-parse HEAD)" ]] && git diff --quiet && git diff --cached --quiet; then
-      tree_note="the working tree, which equals the tip $tip"
-    else tree_note="the working tree, not the tip $tip"; fi
-    ;;
-esac
-if ((no_gates)); then
-  gate_report='- gates: skipped by --no-gates'
-elif [[ ! -f $root/Makefile ]]; then
-  gate_report='- gates: no Makefile at the repository root, none run'
-else
-  gate_report="- ran on: $tree_note"$'\n'
-  ((${#gates[@]})) || gates=(lint check)
-  for target in "${gates[@]}"; do
-    output=$(mktemp)
-    probe=0
-    make --no-print-directory -C "$root" -q "$target" >"$output" 2>&1 || probe=$?
-    if ((probe == 2)) && grep -q -F "No rule to make target '$target'" -- "$output"; then
-      gate_report+="- $target: absent (no such target)"$'\n'
-    elif make --no-print-directory -C "$root" "$target" >"$output" 2>&1; then
-      gate_report+="- $target: ok"$'\n'
-    else
-      code=$?
-      gate_report+="- $target: FAIL (make exit $code)"$'\n'"$fence"$'\n'"$(tail -n 20 -- "$output")"$'\n'"$fence"$'\n'
-    fi
-    rm -f -- "$output"
-  done
-fi
 
-# Assemble whole, scan, then keep.
-draft=$(mktemp -p "$out_dir" .review-brief.XXXXXX)
-trap 'rm -f -- "$draft"' EXIT
-{
-  printf '# Review brief\n\n'
-  printf 'Assembled by review-brief on %s in %s, branch %s. The reviewer reads the repository from its root; paths are relative to it.\n\n' \
-    "$(date -u +%Y-%m-%dT%H:%MZ)" "$(basename -- "$root")" "$branch"
-  printf '## Intent\n\n'
-  cat -- "$intent"
-  printf '\n## Repository state\n\n- head: %s\n- upstream: %s\n' "$head_line" "$upstream"
-  if [[ -n $status ]]; then printf -- '- status:\n%s\n%s\n%s\n' "$fence" "$status" "$fence"; else printf -- '- status: clean\n'; fi
-  printf '\n## Gates\n\n%s\n' "$gate_report"
-  printf '\n## Change: %s\n\n' "$title"
-  if [[ $mode == plan ]]; then
-    printf 'The plan is the intent above; no diff exists yet.\n'
-  else
-    [[ -z $log ]] || printf 'Commits:\n%s\n%s\n%s\n\n' "$fence" "$log" "$fence"
-    printf 'Stat:\n%s\n%s\n%s\n\n%sdiff\n%s\n%s\n' "$fence" "$stat" "$fence" "$fence" "$diff" "$fence"
-  fi
-} >"$draft"
-"$scanner" reply <"$draft" >/dev/null || fail 'the payload scanner rejected the brief (its diagnostic precedes this line); nothing was kept' 2
-[[ $mode == plan ]] || printf '%s\n' "$diff" | "$scanner" diff >/dev/null || fail 'the payload scanner rejected the diff (its diagnostic precedes this line); nothing was kept' 2
-mv -- "$draft" "$out"
-trap - EXIT
-size=$(wc -c <"$out")
-printf 'brief: %s (%s bytes; change: %s)\n' "$out" "$size" "$title"
-((size <= 524288)) || printf 'review-brief: the brief exceeds the bridge artifact limit of 524288 bytes; narrow the change or use the auditor\n' >&2
+def main():
+    parser = argparse.ArgumentParser(description="Assemble scanned review evidence", allow_abbrev=False)
+    parser.error = lambda message: fail(message, 64)
+    parser.add_argument("--intent", required=True)
+    parser.add_argument("--out", required=True)
+    modes = parser.add_mutually_exclusive_group()
+    for mode in ("staged", "worktree", "plan"):
+        modes.add_argument("--" + mode, action="store_true")
+    modes.add_argument("--range")
+    parser.add_argument("--gate", action="append", default=[])
+    parser.add_argument("--no-gates", action="store_true")
+    args = parser.parse_args(sys.argv[2:])
+    if args.gate and (args.no_gates or args.plan):
+        fail("--gate conflicts with --no-gates and --plan", 64)
+    if any(not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_./-]*", target) for target in args.gate):
+        fail("--gate requires a literal make target, not an option or assignment", 64)
+    intent, out = os.path.abspath(args.intent), os.path.abspath(args.out)
+    out_lexical = out
+    root = os.fsdecode(git("rev-parse", "--show-toplevel")).rstrip("\n")
+    root = os.path.realpath(root)
+    os.chdir(root)
+    scratch = os.path.realpath(os.environ["TMPDIR"]) if os.environ.get("TMPDIR") else None
+    scan_args = [scanner_path, "outbound", "--root", root]
+    if scratch:
+        scan_args += ["--scratch-root", scratch]
+    # Let the scanner validate caller scratch, including ownership and permissions.
+    if subprocess.run(scan_args + ["--"], input=b"Review evidence.", stdout=subprocess.DEVNULL).returncode:
+        fail("scanner refused artifact roots", 2)
+
+    def path_preflight(path):
+        # The scanner's existing confinement API requires an existing leaf. This
+        # equivalent name-only check also handles deleted source and new output.
+        lexical, resolved = os.path.abspath(path), os.path.realpath(path)
+        for candidate in (lexical, resolved):
+            if ".git" in candidate.split("/") or scan["sensitive_path"](candidate):
+                fail("sensitive or Git-internal path refused before content access", 2)
+            if re.match(r"^/(?:var/)?tmp/(?:opencode|claude-[^/]+|codex[^/]*)/", candidate):
+                if not scratch or not candidate.startswith(scratch + "/"):
+                    fail("path is outside private caller scratch", 2)
+        if not any(resolved.startswith(base + "/") for base in (root, scratch) if base):
+            fail("path must live under the repository or private caller TMPDIR", 2)
+        return resolved
+
+    path_preflight(intent)
+    out = path_preflight(out)
+    in_repo = out.startswith(root + "/")
+    if args.plan and in_repo:
+        fail("--plan output must be in private caller TMPDIR to keep the repository read-only", 64)
+    if os.path.lexists(out) or os.path.lexists(out_lexical):
+        fail("output exists; written as a new file only", 64)
+    out_dir = os.path.dirname(out)
+    if not os.path.isdir(out_dir):
+        fail("output directory missing", 2)
+    canonical = scan["confine_artifact"](intent, [root], "intent", scratch)
+    intent_bytes = scan["read_artifact"](canonical, "intent")
+    intent_text = scan["decode_text"]("intent", intent_bytes)
+    scan["enforce"](scan["content_findings"]("intent", intent_text, True))
+    missing = [field for field in ("Outcome", "Non-goals", "Constraints", "Acceptance")
+               if not re.search("^" + field + ":", intent_text, re.M)]
+    if missing:
+        fail("the intent lacks a line starting with: " + " ".join(missing), 64)
+
+    def source_state():
+        head = git("rev-parse", "--verify", "HEAD^{commit}").decode().strip()
+        entries = git("ls-files", "--stage", "-z")
+        flags = git("ls-files", "-v", "-z")
+        # Raw cached scope distinguishes intent-to-add without reading worktree bytes.
+        scope = git("diff", "--cached", "--raw", "--no-renames", "--no-ext-diff", "--no-textconv", "-z", head)
+        state = {
+            "HEAD": head,
+            "index entries SHA-256": digest(entries + b"\0flags\0" + flags + b"\0scope\0" + scope),
+        }
+        if args.plan:
+            state["worktree observation"] = "not collected (--plan; no source-content reads)"
+            return state
+        tracked = set(git("ls-files", "--cached", "-z").split(b"\0")[:-1])
+        tracked.update(git("ls-tree", "-r", "--name-only", "-z", head).split(b"\0")[:-1])
+        names = sorted(tracked)
+        for name in names:
+            path_preflight(os.fsdecode(name))
+        manifest, unsupported = [], 0
+        for name in names:
+            path = os.fsdecode(name)
+            resolved = path_preflight(path)
+            if not os.path.lexists(path):
+                item = [path, "missing"]
+            elif os.path.islink(path):
+                item = [path, "symlink", os.readlink(path)]
+                unsupported += 1  # Link targets are not recursively attested.
+            elif os.path.isdir(path):
+                item = [path, "directory/gitlink"]
+                unsupported += 1
+            else:
+                # Match scanner file safety, not its outbound artifact byte cap.
+                # Hash raw source in fixed-size chunks, including binary assets.
+                try:
+                    if not stat.S_ISREG(os.lstat(resolved).st_mode):
+                        fail("tracked source is not a regular file", 2)
+                    descriptor = os.open(resolved, os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK | os.O_NOFOLLOW)
+                except OSError:
+                    fail("cannot open tracked source without following links", 2)
+                with os.fdopen(descriptor, "rb") as stream:
+                    metadata = os.fstat(stream.fileno())
+                    if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_nlink != 1:
+                        fail("tracked source is not a single-link regular file owned by the current user", 2)
+                    source_hash = hashlib.sha256()
+                    while chunk := stream.read(128 * 1024):
+                        source_hash.update(chunk)
+                item = [path, stat.S_IMODE(metadata.st_mode), source_hash.hexdigest()]
+                unsupported += os.path.abspath(path) != resolved
+            manifest.append(item)
+        untracked = git("ls-files", "--others", "--exclude-standard", "-z")
+        state.update({
+            "tracked worktree SHA-256": digest(json.dumps(manifest, ensure_ascii=True).encode()),
+            "untracked names SHA-256 (not contents)": digest(untracked),
+            "untracked count": untracked.count(b"\0"),
+            "unattested symlink/gitlink count": unsupported,
+        })
+        state["source-state SHA-256"] = digest(json.dumps(state, sort_keys=True).encode())
+        return state
+
+    before = source_state()
+    head_line = git("log", "-1", "--format=%H %s").decode().strip()
+    branch = git("rev-parse", "--abbrev-ref", "HEAD").decode().strip()
+    mode = "plan" if args.plan else "range" if args.range else "worktree" if args.worktree else "staged"
+    log, diff, change_stat = "", b"", b""
+    if args.range:
+        if not re.fullmatch(r"[^.\s-][^\s]*\.\.[^.\s-][^\s]*", args.range) or "..." in args.range:
+            fail("--range takes BASE..TIP", 64)
+        base, tip = [git("rev-parse", "--verify", "--end-of-options", ref + "^{commit}").decode().strip()
+                     for ref in args.range.split("..", 1)]
+        git("merge-base", "--is-ancestor", base, tip)
+        for ref in (base, tip):
+            for name in git("ls-tree", "-r", "--name-only", "-z", ref).split(b"\0")[:-1]:
+                path_preflight(os.fsdecode(name))
+        log = git("log", "--format=%H %s", base + ".." + tip).decode()
+        if not log:
+            fail("no commits in range")
+        compare = [base, tip]
+        title = "commits " + args.range
+    elif mode == "staged":
+        compare, title = ["--cached", before["HEAD"]], "staged index against HEAD"
+    elif mode == "worktree":
+        compare, title = [before["HEAD"]], "working tree against HEAD"
+    else:
+        compare, title = [], "none, plan review"
+    if mode != "plan":
+        options = ["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--ignore-submodules=dirty", "--submodule=short"]
+        diff = git(*options, *compare, "--")
+        change_stat = git(*options, "--stat", *compare, "--")
+        if not diff:
+            fail("nothing is staged" if mode == "staged" else "no tracked diff to review")
+        scan["enforce"](scan["content_findings"]("diff", scan["decode_text"]("diff", diff), True))
+
+    gates, failed = [], False
+    skipped = args.no_gates or args.plan
+    if skipped:
+        gates.append("- gates: unverified, skipped by " + ("--no-gates" if args.no_gates else "--plan (read-only)"))
+    else:
+        for target in args.gate or ["lint", "check"]:
+            command = ["make", "--no-print-directory", "-C", root, "--", target]
+            result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            failed |= result.returncode != 0
+            gates += ["- command: `" + shlex.join(command) + "`",
+                      f"- {target}: {'ok' if result.returncode == 0 else 'FAIL'} (make exit {result.returncode})"]
+            if result.returncode:
+                output = scan["decode_text"]("gate output", result.stdout)
+                scan["enforce"](scan["content_findings"]("gate output", output, True))
+                gates.append("Last 20 output lines:\n```\n" + "\n".join(output.splitlines()[-20:]) + "\n```")
+    after = source_state()
+    changed = before != after
+    reasons = []
+    if skipped:
+        reasons.append("gates unverified/skipped; --no-gates alone is never gate evidence")
+    if failed:
+        reasons.append("failed gates")
+    if changed:
+        reasons.append("repository metadata changed during plan collection" if args.plan else "source-state changed during collection/gates")
+    if before.get("untracked count", 0) or after.get("untracked count", 0):
+        reasons.append("Git-visible untracked contents were not read or hashed")
+    if before.get("unattested symlink/gitlink count", 0) or after.get("unattested symlink/gitlink count", 0):
+        reasons.append("symlink targets or gitlink contents are not attested")
+    if in_repo:
+        reasons.append("output creates a repository file after these observations")
+    reuse = "disabled: " + "; ".join(reasons) if reasons else "conditional evidence only, not automatic reuse"
+    state_text = "\n".join(f"- {key}: {value}" for key, value in before.items())
+    after_text = "\n".join(f"- {key}: {value}" for key, value in after.items())
+    comparison = "repository metadata" if args.plan else "source-state"
+    scope = (
+        "Plan observation scope: HEAD and read-only index entries/flags only. Worktree contents, "
+        "untracked names/contents and symlink/gitlink contents were not collected. No source-state "
+        "or worktree digest is asserted, and no gate evidence or reuse is available."
+        if args.plan else
+        "Fingerprint scope: SHA-256 of read-only index entries/flags and streamed raw tracked file bytes/modes, "
+        "missing paths and link names. Untracked names/counts are recorded, NOT their contents; "
+        "tracked equality never covers untracked inputs. Sensitive tracked source paths refuse before reads, "
+        "even if apparently unchanged; this brief does not infer their content equality."
+    )
+    body = (
+        f"# Review brief\n\nAssembled {datetime.now(timezone.utc).isoformat()} in {root}, branch {branch}.\n\n"
+        f"## Intent\n\n{intent_text}\n\n## Repository state\n\n- head: {head_line}\n"
+        f"- mode: {mode}\n\n### Before {'collection' if args.plan else 'gates'}\n\n{state_text}\n\n"
+        f"### After {'collection' if args.plan else 'gates'}\n\n{after_text}\n\n"
+        f"- {comparison} comparison: {'CHANGED' if changed else 'observed fingerprints unchanged'}\n"
+        f"- reuse: {reuse}\n\n"
+        f"{scope} These are not Git tree IDs; no staging or write-tree is performed. "
+        "Ignored files, dependencies, runtime/environment, Git configuration and host inputs are not attested. "
+        "Their relevant state must be supplied and revalidated in the intent/checkpoint, never inferred.\n\n"
+        "Same-workstream reuse requires re-reading this artifact, exact unchanged relevant source state "
+        "and revalidated context. Unknown changes forbid reuse. Endpoint observations cannot detect "
+        "transient changes reverted between observations and are not a concurrency lock. "
+        "A candidate tree may be supplied in intent and verified separately; this brief does not verify it.\n\n"
+        "## Gates\n\n"
+        + ("" if args.plan else
+           "- execution scope when run: working checkout, not an attestation of the index or range tip. "
+           "The diff below was collected before gates; different trees do not share gate evidence.\n")
+        + "\n".join(gates) + f"\n\n## Change: {title}\n\n"
+    )
+    if mode == "plan":
+        body += "The plan is the intent above; no diff was collected and no gates were executed.\n"
+    else:
+        if log:
+            body += "Commits:\n```\n" + log + "```\n\n"
+        body += "Stat:\n```\n" + change_stat.decode() + "```\n\n```diff\n" + diff.decode() + "```\n"
+    data = body.encode()
+    if len(data) > scan["ARTIFACT_MAX"]:
+        fail("brief exceeds scanner artifact limit", 2)
+    scan["enforce"](scan["content_findings"]("brief", body, True))
+    # Pin the parent and exclusively create only after the complete scan. A
+    # raced file/link is never replaced, and no unscanned draft touches disk.
+    path_preflight(out)
+    directory = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        parent_path = ""
+        for component in out_dir.strip("/").split("/"):
+            child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            os.close(directory)
+            directory = child
+            parent_path += "/" + component
+            if parent_path == scratch:
+                metadata = os.fstat(directory)
+                if metadata.st_uid != os.getuid() or metadata.st_mode & 0o077:
+                    raise OSError("scratch is no longer private")
+    except OSError:
+        os.close(directory)
+        fail("output parent changed or cannot be opened without links", 2)
+    try:
+        descriptor = os.open(os.path.basename(out), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             0o600, dir_fd=directory)
+        created = os.fstat(descriptor)
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(data)
+        except BaseException:
+            current = os.stat(os.path.basename(out), dir_fd=directory, follow_symlinks=False)
+            if (current.st_dev, current.st_ino) == (created.st_dev, created.st_ino):
+                os.unlink(os.path.basename(out), dir_fd=directory)
+            raise
+    except FileExistsError:
+        fail("output exists; written as a new file only", 64)
+    finally:
+        os.close(directory)
+    print(f"brief: {out} ({len(data)} bytes; change: {title})")
+    return 1 if failed or changed else 0
+
+
+try:
+    sys.exit(main())
+except (OSError, UnicodeError, ValueError):
+    fail("IO, encoding or repository state refused; no diagnostic bytes exposed")
+PY

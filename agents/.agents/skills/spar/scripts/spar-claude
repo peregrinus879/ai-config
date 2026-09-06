@@ -13,7 +13,7 @@
 # redirect authentication or routing, and the claude runtime may not resolve
 # inside the repository under review. The request and each artifact pass the
 # payload scanner, which inlines the artifacts into one prompt sent on stdin;
-# artifacts must live under the repository (outside .git) or the temp root.
+# artifacts must live under the repository (outside .git) or a private TMPDIR.
 # The reply arrives on stdout; the session id arrives on stderr as
 # "SPAR-BRIDGE ID: <session-id>". Every stowed host consents to disclosure by
 # default; the bridge refuses where `git config spar.consent` is set to
@@ -83,19 +83,28 @@ repo=$(realpath -e -- "$repo") || abort "cannot resolve the repository root"
 [[ $repo != *'"'* && $repo != *"'"* && $repo != *\\* && $repo != *'*'* && $repo != *'?'* &&
   $repo != *'['* && $repo != *']'* && $repo != *[[:cntrl:]]* ]] ||
   abort "the repository path cannot be represented safely in permission rules"
-consent=$(git config --get spar.consent 2>/dev/null || true)
-[[ -z $consent || $consent == true ]] ||
-  abort "spar.consent is '$consent' for this repository; only unset or true allows disclosure"
+consent_status=0
+consent=$(git config --get spar.consent 2>/dev/null && printf '.') || consent_status=$?
+[[ $consent_status == 1 || ( $consent_status == 0 && $consent == $'true\n.' ) ]] ||
+  abort "spar.consent must be unset or literal true; empty values and lookup errors refuse disclosure"
 [[ $reviewer != "$repo/"* ]] || abort "the claude runtime resolves inside the repository under review"
 
 # Scan, confine, and assemble the prompt before any reviewer process starts;
-# artifacts must sit under the repository or a temp root.
-prompt=$(printf '%s' "$request" | "$scanner" outbound --root "$repo" --root /tmp --root /var/tmp "$@") ||
+# No broad temp disclosure grant: the caller names its private scratch in TMPDIR.
+scan_args=(outbound --root "$repo")
+[[ -z ${TMPDIR:-} ]] || scan_args+=(--scratch-root "$TMPDIR")
+prompt=$(printf '%s' "$request" | "$scanner" "${scan_args[@]}" -- "$@") ||
   abort "the request or an artifact failed the outbound content scan"
 
 # Every reviewer process starts from a scrubbed environment.
 scrubbed=(/usr/bin/env -i -C "$repo" HOME="$account_home" PATH="$PATH" TERM="${TERM:-dumb}" LANG="${LANG:-C.UTF-8}"
   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_AUTOUPDATER=1)
+clientversion=$("${scrubbed[@]}" timeout --kill-after=2 10 "$reviewer" --version 2>/dev/null) || clientversion=unknown
+if [[ $clientversion =~ ^([0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6})\ \(Claude\ Code\)$ ]]; then
+  clientversion=${BASH_REMATCH[1]}
+else
+  clientversion=unknown
+fi
 
 # Subscription authentication only, checked with the review's own isolation.
 auth=$("${scrubbed[@]}" timeout --kill-after=2 30 "$reviewer" --safe-mode --setting-sources= auth status 2>/dev/null) ||
@@ -135,7 +144,11 @@ settings=$(jq -cn --arg repo "$repo" --arg home "$account_home" '
         "Read(/" + $home + "/.local/share/keyrings)", "Read(/" + $home + "/.local/share/keyrings/**)",
         "Read(/" + $home + "/.mozilla)", "Read(/" + $home + "/.mozilla/**)",
         "Read(/" + $repo + "/.git)", "Read(/" + $repo + "/.git/**)"
-      ]
+      ] + ([".aws", ".ssh", ".gnupg", ".kube", ".mozilla", ".config/BraveSoftware", ".config/chromium", ".local/share/keyrings"] |
+        map(. as $store | ["./", "./**/"] | map("Read(" + . + $store + ")", "Read(" + . + $store + "/**)")) | flatten) +
+        ([".claude/.credentials.json", ".codex/auth.json", ".config/gh/hosts.yml", ".docker/config.json", ".local/share/opencode/auth.json", ".bash_history", ".zsh_history",
+          "*.key", "*.pem", "*.p12", "*.pfx", "credentials", "credentials.*", "auth.json", ".netrc", ".npmrc", ".pypirc", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"] |
+        map(. as $store | ["./", "./**/"] | map("Read(" + . + $store + ")")) | flatten)
     }
   }
 ') || abort "cannot build isolated Claude settings"
@@ -209,5 +222,14 @@ reply=$(jq -r '.result | select(type == "string")' <<<"$result")
 [[ -n $reply ]] || fail_reviewer "the reviewer ended without a reply"
 printf '%s' "$reply" | "$scanner" reply >/dev/null || abort "the reply failed the inbound content scan"
 
-[[ -z $session ]] || diagnose "SPAR-BRIDGE ID: $session"
+[[ ! $session =~ $UUID_RE ]] || diagnose "SPAR-BRIDGE ID: $session"
+# Result usage keys are observed models, never the configured alias. Only
+# bounded identifiers survive; no session files or credential stores are read.
+metadata=$(jq -c --arg version "$clientversion" '
+  def safe: if type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}\\z") then . else "unknown" end;
+  {model: ((.modelUsage // {} | keys | if length == 1 then .[0] else "unknown" end) | safe),
+   effort: "unknown", tier: (.usage.service_tier | safe), clientversion: $version}
+' <<<"$result" 2>/dev/null) || metadata='{"model":"unknown","effort":"unknown","tier":"unknown","clientversion":"unknown"}'
+printf '%s' "$metadata" | "$scanner" reply >/dev/null 2>&1 || metadata='{"model":"unknown","effort":"unknown","tier":"unknown","clientversion":"unknown"}'
+diagnose "SPAR-BRIDGE PROVENANCE: $metadata"
 printf '%s\n' "$reply"
