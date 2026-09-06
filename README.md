@@ -17,7 +17,7 @@ One policy, one workflow, three coding agents. EyrAgents is a personal harness t
 |---|---|---|
 | [Claude Code](https://code.claude.com/docs/en/overview) | [github.com/anthropics/claude-code](https://github.com/anthropics/claude-code) | `~/.claude/CLAUDE.md`, `~/.claude/settings.json`, `~/.claude/skills/`, `~/.claude/agents/`, and the status line script |
 | [Codex](https://learn.chatgpt.com/codex) | [github.com/openai/codex](https://github.com/openai/codex) | `~/.codex/AGENTS.md`, `~/.agents/skills/`, and a host-local `~/.codex/config.toml` installed from the tracked template |
-| [OpenCode](https://opencode.ai/docs) | [github.com/anomalyco/opencode](https://github.com/anomalyco/opencode) | `~/.config/opencode/opencode.json`, whose `instructions`, `skills.paths`, and auditor prompt point at `~/.agents`, plus `tui.json`, the slash commands, and the plugin |
+| [OpenCode](https://opencode.ai/docs) | [github.com/anomalyco/opencode](https://github.com/anomalyco/opencode) | `~/.config/opencode/AGENTS.md`, a symlink to shared guidance, and `opencode.json`, whose `skills.paths` and auditor prompt point at `~/.agents`, plus `tui.json`, the slash commands, and the plugins |
 
 The tools themselves are installed outside this repository, through [mise](https://mise.jdx.dev) on both machines: Omarchy installs its own wrappers, and eyrwsl's `mise` package stows the same wrappers on WSL.
 
@@ -65,10 +65,11 @@ eyragents/
 ├── codex/                                # Codex package
 │   └── .codex/AGENTS.md                  # global instructions: symlink to the shared guidance
 ├── opencode/.config/opencode/            # OpenCode package
-│   ├── opencode.json                     # permissions, models, the guidance and skills paths, and the auditor agent
+│   ├── AGENTS.md                         # native global instructions: symlink to the shared guidance
+│   ├── opencode.json                     # permissions, models, skills path, and the auditor agent
 │   ├── tui.json
 │   ├── commands/{commit,publish,spar}.md # slash commands that load the skills
-│   └── plugins/commit-gate.js            # runs commit-gate before every bash tool call
+│   └── plugins/{commit-gate,auditor-permissions,scratch-permissions}.js   # shell gate, auditor policy and native scratch guardrail
 ├── .agents/skills/eyrsync/SKILL.md       # this repository's own skill, with a .claude symlink; Codex and OpenCode read .agents natively
 ├── templates/codex/config.toml           # portable Codex profile, installed host-locally by make stow
 ├── templates/hooks/commit-gate           # the commit gate, installed as a real file at ~/.agents/hooks by make stow
@@ -86,11 +87,7 @@ eyragents/
 
 Trusted-repository work is autonomous until the commit boundary: a clear implementation request authorizes edits and the repository's gates, every commit requires approval of one exact staged candidate, and the user performs pushes manually after the `publish` skill reviews the delta; the same skill verifies the push and the published state afterwards.
 
-Every tool may read everything under `~/Projects`, the author's repositories and reference clones, the temp roots `/tmp` and `/var/tmp`, and the system trees `/usr`, `/etc`, `/opt`, `/sys`, and `/var/lib/pacman` by standing grant, each tool denied the other tools' session roots under `/tmp`; the file tools keep denying credential-shaped paths and copied credential stores there, with the exceptions `AGENTS.md` records. What each tool actually enforces differs, and the configuration says so:
-
-- Claude Code: deterministic allow and deny rules, plus an auto-mode classifier that reviews every other tool call. The named command forms of pushes, `git clean`, `gh` repository mutations, and privilege escalation are denied by rule, as are credential reads and writes through the file tools; everything else, including alternate command spellings, shell access to credential paths, destructive Git operations, Git configuration changes, and persistence surfaces, is the classifier's call and clears only on the user's explicit instruction.
-- Codex: an OS sandbox with the filesystem root denied, credential stores and shapes denied, `.git/config` and `.git/hooks` read-only, and command network off. Permission requests go through an automatic reviewer.
-- OpenCode: lexical Bash rules, worktree-relative read and edit rules, native access under `~/Projects` that spares reads a prompt and leaves the shell's file commands unprompted there, and an ask default for file-tool edits outside the worktree and for access elsewhere outside the app temp root. It has no sandbox or classifier, so its rules are guardrails against mistakes, not containment against a prompt-injected session.
+Shared guidance authorizes non-secret reads under `~/Projects`, `/tmp`, `/var/tmp`, `/usr`, `/etc`, `/opt`, `/sys`, and `/var/lib/pacman`, excluding other tools' session roots. It does not promise prompt-free or technically read-only access everywhere. Claude Code uses native rules and auto-mode review without a tracked sandbox; Codex restricts local execution with a root-denied filesystem/command-network sandbox and reviews eligible boundary crossings; OpenCode uses lexical/path guardrails, not OS containment. Credential and edit boundaries still apply where those mechanisms have gaps. Prefer narrow, one-time approvals over persistent broad grants; no global auto-approval is needed.
 
 This repository is itself live configuration on a stowed host: an edit here is active for the next session of the tool it belongs to before anything is committed. Work on it only in a session you are watching.
 
@@ -98,7 +95,7 @@ User-directed reads of relevant non-secret external context use each tool's nati
 
 Before long or unattended work, the atomic plan also identifies work/reference/scratch roots and approval-sensitive operations. Resolve predictable access needs while H is present, rather than repeatedly interrupting authorized routine work. Unexpected access needs remain blockers, not permission to bypass a gate or enlarge permanent grants; independent authorized work can continue where possible. Commit and publication remain deliberate human boundaries.
 
-The `spar` workflow uses subscription-authenticated, read-only cross-vendor reviewers without web or command-network access. A reviewer may receive readable repository files, including private-repository files, except for Git internals and credential-shaped paths; a repository that must not reach the other vendor opts out with `git config spar.consent false`. An unset setting permits review; only literal `true` permits it when set, and empty values or lookup errors refuse.
+The `spar` workflow uses subscription-authenticated, read-only cross-vendor reviewers without web or command-network access. A reviewer may receive readable repository files, including private-repository files, except for Git internals and credential-shaped paths; a repository that must not reach the other vendor opts out with `git config spar.consent false`. An unset setting permits review; only literal `true` permits it when set, and empty values or lookup errors refuse. OpenCode's in-tool auditor permits only read/glob and denies unknown tools; grep is blocked because upstream does not apply per-file read policies to its results.
 
 ## Setup
 
@@ -133,7 +130,7 @@ make stow      # clean, then link every package file (directories stay real; eac
 make dry-run   # preview Stow actions
 make restow    # clean, then refresh links after repo content changes
 make unstow    # remove package links
-make canary    # run each tool once and assert the inventory, the gate, the read grant, and a secret refusal (model calls)
+make canary    # up to six calls per tool; interactive-only checks stay incomplete
 ```
 
 Stow runs without directory folding, so `~/.claude`, `~/.config/opencode`, and the other managed parents stay real directories that tools may write into. The one exception is each `~/.agents/skills/<name>`, linked whole by `make stow`, because Codex's skill loader follows directory links and skips file links. Stow reports any conflicting regular file without changing it; reconcile it explicitly.
@@ -157,6 +154,12 @@ codex -C /absolute/path/to/checkout --ignore-rules \
 OpenCode has no untrusted mode: `OPENCODE_DISABLE_PROJECT_CONFIG=1 OPENCODE_DISABLE_EXTERNAL_SKILLS=1 opencode` disables project configuration and external skills only, and its shell stays unconfined.
 
 ## Workflows
+
+### Model Effort
+
+The configured primary OpenCode model defaults to `xhigh`. In `/variants`, `Default` means use configured request defaults, not medium effort. An explicit named variant overrides that setting. OpenCode remembers choices separately for base Astra and Astra Fast and can skip the follow-up effort dialog when a choice already exists; use `/variants` to inspect it. A missing effort badge is not evidence of a lower request effort. Keep deliberate overrides rather than rewriting saved state or adding duplicate model pins solely for the display.
+
+### Change Workflow
 
 - `commit` runs the repository's gates and presents an exact candidate and its gate evidence for approval. `commit-candidate -- PATH...` records the prepared index without staging; explicit `--stage` stages whole literal intended paths and refuses partially staged mixed files before staging anything. Its immutable `candidate-id` identifies the tree, parent, branch, message, and identity; `commit-apply ID` requires that exact approved ID. `commit-candidate --show ID` displays it; `--clear ID` rejects it without restoring the index or worktree. Apply uses an isolated index with normal hooks and checks the actual commit. Rejection compensates only by a safe compare-and-swap of that invocation's uniquely identified commit; otherwise it preserves state and stops for H, never resets an unexplained tip.
 - `publish` uses `publish-bind` to record an immutable `binding-id` covering the reviewed commit, tracking baseline, resolved push endpoint, branch, and relevant configuration. It scans every new commit's raw metadata, explicit per-parent merge patches, the flat diff, and complete newly reachable blobs and tree paths, including transient content removed before the tip. Its H-run command preserves `publish-bind --check ID` immediately before the explicit one-branch push, with an exact-base lease and no incidental tags or submodule pushes. `publish-verify ID` observes the bound push endpoint through read-only `ls-remote`; local tracking is reported separately, CI remains a separate check, and `verify-published` runs only where defined. Remote equality is a point-in-time observation, not proof of who pushed.
@@ -183,6 +186,8 @@ make check
 ```
 
 After stowing, `make verify` runs both and adds deployment checks. GitHub Actions runs `make lint` and `make check` on every push to `main` and every pull request. Restart OpenCode after changing its config or skills because they load at process startup.
+
+`make canary` is separate live behavioral smoke testing, not a repository gate or independent permission-dispatch proof. It makes up to six calls per tool: skills, reported gate denial with unchanged HEAD, README read, system read, external temporary fixture read, and fixture-marker non-disclosure. OpenCode reads its own fixture README and the preapproved `/usr/lib/os-release`; only its general external-temp check requires interactive approval and stays explicitly skipped. Each performed assertion requires a successful, nonempty reply. Exit 1 means failure; exit 2 means skipped or unverified checks; exit 0 means all selected behavioral checks passed. Verify remaining prompts interactively rather than bypassing them for green output. A moved/unreadable fixture HEAD stops the probe without resetting it. Mocks and static checks do not establish live behavior.
 
 Consult [`docs/maintenance.md`](docs/maintenance.md) before major tool or plugin changes, permission or bridge changes, cross-host work, `/doctor`, or work on a listed limitation or deferred item.
 

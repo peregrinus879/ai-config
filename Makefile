@@ -31,7 +31,7 @@ help:
 	@echo "  check          Repository checks: package and project symlinks resolve, owned JSON and TOML parse, then test (runs in CI)"
 	@echo "  verify-deploy  Check every package file resolves to its deployed target"
 	@echo "  verify         lint, check, and verify-deploy"
-	@echo "  canary         Run each tool once, non-interactively, and assert the inventory, the gate, the read grant, and a secret refusal (model calls; not a gate)"
+	@echo "  canary         Up to six live calls per tool; interactive-only OpenCode checks reported separately (not a gate)"
 	@echo "  clean          Remove dangling links that point into this repository's packages"
 
 stow: clean
@@ -94,7 +94,7 @@ lint:
 	python3 -I -c 'import sys; [compile(open(p, "rb").read(), p, "exec") for p in sys.argv[1:]]' \
 	  agents/.agents/skills/spar/scripts/spar-payload-scan scripts/reconcile-codex-config.py tests/config-contracts.py \
 	  agents/.agents/skills/commit/scripts/governance.py tests/commit-governance.py
-	node --check opencode/.config/opencode/plugins/commit-gate.js
+	@set -e; for plugin in opencode/.config/opencode/plugins/*.js; do node --check "$$plugin"; done
 	@echo "ok:   lint"
 
 test:
@@ -104,6 +104,8 @@ test:
 	bash tests/review-brief.sh
 	bash tests/spar-bridges.sh
 	bash tests/commit-gate.sh
+	bash tests/opencode-auditor.sh
+	bash tests/opencode-scratch.sh
 	bash tests/canary.sh
 	bash tests/publish-clip.sh
 	@echo "ok:   test"
@@ -192,7 +194,7 @@ verify-deploy:
 verify: lint check verify-deploy
 	@echo "ok:   verify"
 
-# Live behavior of the deployed tools: four model calls per tool from a
+# Live behavior of the deployed tools: up to six model calls per tool from a
 # throwaway repository. Run after make restow.
 canary:
 	bash scripts/canary.sh

@@ -19,11 +19,11 @@
       "model": "openai/gpt-6-astra",
       "prompt": "{file:~/.agents/agents/auditor.md}",
       "permission": {
-        "edit": "deny",
-        "bash": "deny",
-        "webfetch": "deny",
-        "websearch": "deny",
-        "task": "deny"
+        "*": {},
+        "read": {},
+        "glob": {},
+        "external_directory": {},
+        "**": "deny"
       }
     }
   },
@@ -101,7 +101,6 @@
     "edit": {
       "*": "allow",
       "../*": "ask",
-      "../*/tmp/opencode/*": "allow",
       "**/*.key": "deny",
       "**/*.p12": "deny",
       "**/*.pem": "deny",
@@ -173,15 +172,10 @@
     "external_directory": {
       "*": "ask",
       "/tmp/opencode/*": "allow",
-      "~/Projects/**": "allow",
-      "/usr/**": "allow",
-      "/etc/**": "allow",
-      "/opt/**": "allow",
-      "/sys/**": "allow",
-      "/var/lib/pacman/**": "allow",
-      "/tmp/**": "allow",
-      "/var/tmp/**": "allow",
+      "~/Projects/scratch/**": "allow",
       "~/.agents/skills/**": "allow",
+      "/usr/**": "allow",
+      "/var/lib/pacman/**": "allow",
       "/tmp/claude-*/**": "deny",
       "~/.aws/**": "deny",
       "~/.config/BraveSoftware/**": "deny",
@@ -287,8 +281,5 @@
         }
       }
     }
-  },
-  "instructions": [
-    "{env:HOME}/.agents/shared-guidance.md"
-  ]
+  }
 }
