@@ -16,14 +16,18 @@ SHELLCHECK_FILES := claude-code/.claude/statusline.sh \
   $(filter-out %/spar-payload-scan %.py,$(wildcard agents/.agents/skills/*/scripts/*)) \
   $(wildcard scripts/*.sh tests/*.sh)
 
-.PHONY: help stow unstow dry-run restow require-clone install-gate migrate-codex-config lint test check verify-deploy verify canary clean
+.PHONY: help stow unstow dry-run restow require-clone check-skills install-gate migrate-codex-config lint test check verify-deploy verify canary clean
+
+# Deployment goals and their guards must never race, including `make -j clean restow`.
+.NOTPARALLEL:
 
 help:
 	@echo "Targets:"
 	@echo "  stow           Clean dangling links, stow all packages into ~, link each skill directory, install the commit gate, reconcile the Codex config"
 	@echo "  unstow         Remove all package links and the skill directory links"
 	@echo "  dry-run        Preview Stow actions"
-	@echo "  restow         Clean, refresh links, install the commit gate, and reconcile the Codex config (refuses from a non-deployed clone)"
+	@echo "  restow         Guard, preflight skills, clean, refresh links, install the gate, and reconcile Codex config"
+	@echo "  check-skills   Read-only preflight of every managed skill directory"
 	@echo "  install-gate   Install templates/hooks/commit-gate as a real file under ~/.agents/hooks"
 	@echo "  migrate-codex-config  Reconcile ~/.codex/config.toml with the template, keeping host tables"
 	@echo "  lint           ShellCheck, Python, and plugin syntax checks over managed scripts"
@@ -41,7 +45,7 @@ stow: clean
 	$(MAKE) --no-print-directory install-gate
 	bash scripts/prepare-stow.sh --migrate-codex-config
 
-unstow:
+unstow: require-clone check-skills
 	$(STOW) -D -v $(TOOL_PACKAGES)
 	$(AGENTS_STOW) -D -v agents
 	bash scripts/prepare-stow.sh --unlink-skills
@@ -50,7 +54,7 @@ dry-run:
 	$(STOW) -n -v $(TOOL_PACKAGES)
 	$(AGENTS_STOW) -n -v agents
 
-restow: require-clone clean
+restow: clean
 	$(STOW) -R -v $(TOOL_PACKAGES)
 	$(AGENTS_STOW) -R -v agents
 	bash scripts/prepare-stow.sh --link-skills
@@ -60,33 +64,20 @@ restow: require-clone clean
 # The hook runs outside the Codex sandbox, so its executable lives outside
 # every workspace as a real file the sandboxed agent cannot write.
 GATE := $(HOME)/.agents/hooks/commit-gate
-install-gate:
-	install -D -m 755 templates/hooks/commit-gate $(GATE)
-	@echo "ok:   commit gate installed at $(GATE)"
+# Preserve an override as data, never recursively expand Make expressions.
+override export GATE := $(value GATE)
+install-gate: require-clone
+	@bash scripts/prepare-stow.sh --install-gate
 
 # A managed endpoint that is a link must resolve into this clone; a reference
 # clone of the same repository must never redeploy the packages from itself.
 require-clone:
-	@fail=0; \
-	while IFS= read -r -d '' src; do \
-	  target="$$HOME/$${src#*/}"; \
-	  [[ -L $$target ]] || continue; \
-	  case $$(readlink -f -- "$$target") in \
-	    "$(CURDIR)"/*) ;; \
-	    *) echo "FAIL: $$target is linked from another clone; run make stow from the deployed clone"; fail=1 ;; \
-	  esac; \
-	done < <(git ls-files -z --cached --others --exclude-standard -- $(PACKAGES)); \
-	for src in agents/.agents/skills/*/; do \
-	  name=$${src%/}; name=$${name##*/}; target="$$HOME/.agents/skills/$$name"; \
-	  [[ -L $$target ]] || continue; \
-	  case $$(readlink -f -- "$$target") in \
-	    "$(CURDIR)"/*) ;; \
-	    *) echo "FAIL: $$target is linked from another clone; run make stow from the deployed clone"; fail=1 ;; \
-	  esac; \
-	done; \
-	exit $$fail
+	@bash scripts/prepare-stow.sh --require-clone
 
-migrate-codex-config:
+check-skills: require-clone
+	@bash scripts/prepare-stow.sh --check-skills
+
+migrate-codex-config: require-clone
 	bash scripts/prepare-stow.sh --migrate-codex-config
 
 lint:
@@ -101,6 +92,7 @@ test:
 	python3 tests/config-contracts.py
 	bash tests/statusline.sh
 	bash tests/prepare-stow.sh
+	bash tests/reconcile-codex.sh
 	bash tests/review-brief.sh
 	bash tests/spar-bridges.sh
 	bash tests/commit-gate.sh
@@ -131,6 +123,7 @@ check:
 # and a retired source must leave no link behind. GNU Stow ignores .gitignore
 # files, so they are skipped.
 verify-deploy:
+	@bash scripts/prepare-stow.sh --check-gate
 	@fail=0; \
 	while IFS= read -r -d '' src; do \
 	  [[ "$$src" == */.gitignore ]] && continue; \
@@ -177,9 +170,6 @@ verify-deploy:
 	  skill=spar; [[ $$b == commit-* ]] && skill=commit; [[ $$b == publish-* ]] && skill=publish; \
 	  if [[ -x "$$HOME/.agents/skills/$$skill/scripts/$$b" ]]; then echo "ok:   $$b executable"; else echo "FAIL: $$b missing or not executable"; fail=1; fi; \
 	done; \
-	if [[ -f "$(GATE)" && ! -L "$(GATE)" && -x "$(GATE)" ]] && cmp -s templates/hooks/commit-gate "$(GATE)"; then \
-	  echo "ok:   installed commit gate matches templates/hooks/commit-gate"; \
-	else echo "FAIL: installed commit gate missing, linked, or drifted (run make restow)"; fail=1; fi; \
 	config="$$HOME/.codex/config.toml"; \
 	if [[ -f $$config && ! -L $$config && -O $$config && $$(stat -c '%a' -- "$$config") =~ ^[46]00$$ ]] && \
 	  python3 scripts/reconcile-codex-config.py check templates/codex/config.toml "$$config" && \
@@ -199,5 +189,5 @@ verify: lint check verify-deploy
 canary:
 	bash scripts/canary.sh
 
-clean:
+clean: check-skills
 	bash scripts/prepare-stow.sh

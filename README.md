@@ -125,9 +125,9 @@ cd eyragents
 Run from the repository root:
 
 ```bash
-make clean     # remove dangling links that point into this repository's packages
+make dry-run   # preview Stow actions before resolving conflicts
+make clean     # guard clone and skills, then remove recognized dangling package links
 make stow      # clean, then link every package file (directories stay real; each skill directory is one link)
-make dry-run   # preview Stow actions
 make restow    # clean, then refresh links after repo content changes
 make unstow    # remove package links
 make canary    # up to six calls per tool; interactive-only checks stay incomplete
@@ -135,7 +135,9 @@ make canary    # up to six calls per tool; interactive-only checks stay incomple
 
 Stow runs without directory folding, so `~/.claude`, `~/.config/opencode`, and the other managed parents stay real directories that tools may write into. The one exception is each `~/.agents/skills/<name>`, linked whole by `make stow`, because Codex's skill loader follows directory links and skips file links. Stow reports any conflicting regular file without changing it; reconcile it explicitly.
 
-`make stow` and `make restow` also install `templates/hooks/commit-gate` as a real file under `~/.agents/hooks`, outside every workspace because the hooks run it outside the Codex sandbox, and install `~/.codex/config.toml` from `templates/codex/config.toml` as a host-local file. The template owns the effort, review, feature, and permission settings; tables that Codex or the desktop app add (projects, plugins, MCP servers, desktop state) and the root `service_tier` a `/fast` choice writes are preserved across reconciliations, the latter unless the host root is still exactly a committed template's, which is residue.
+Every host-writing Make target checks deployed-clone ownership, including cleanup, gate installation, and Codex reconciliation. `make check-skills` preflights every selected skill before cleanup or link conversion; foreign files or links cause unchanged refusal rather than partial conversion. Deployment goals are serialized within one Make invocation, including `make -j`; this is not a transaction against I/O failure or independent concurrent deployments. `make dry-run` previews Stow, not all reconciliation effects.
+
+`make stow` and `make restow` also install `templates/hooks/commit-gate` as a real file under `~/.agents/hooks`, outside every workspace because the hooks run it outside the Codex sandbox, and install `~/.codex/config.toml` from `templates/codex/config.toml` as a host-local file. The template owns the effort, review, feature, and permission settings; host-only tables, `hooks.state`, and the root `service_tier` a `/fast` choice writes are preserved across reconciliations, the latter unless the host root is still exactly a committed template's, which is residue. Reconciliation parses TOML boundaries and checks preserved semantics before emitting replacement bytes; unsupported layouts, including inline/dotted `hooks.state`, refuse rather than discard state. Stop for deliberate host-local repair, without printing configuration values.
 
 When moving clones, run `make unstow` in the old clone and `make stow` in the new clone. If the old clone is unavailable, `make stow` from the new clone removes the dangling links first.
 

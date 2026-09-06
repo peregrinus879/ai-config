@@ -28,21 +28,20 @@ residue, and the lookup runs only when the host carries a host-owned key.
 host-only tables. `check` exits 0 when HOST already carries the template's
 root keys and tables with the template's values and no root key the template
 lacks, the host-owned key aside, 1 when it has drifted, and 2 when either file does not parse.
-Sections are split on top-level table headers line by line; a multi-line
-string that contains a line shaped like a header makes the reconciled output
-fail to parse, which `merge` reports instead of writing.
+Section boundaries are recognized only at complete TOML prefixes, not inside
+multiline strings or arrays. Before emitting any output, merge compares all
+host-owned semantics as well as template ownership. Unsupported layouts refuse
+without emitting replacement bytes; diagnostics never include config values.
 """
 
 from __future__ import annotations
 
 import json
-import re
 import subprocess
 import sys
 import tomllib
 from pathlib import Path
 
-HEADER = re.compile(r"^\s*\[\[?(?P<key>.*?)\]\]?\s*(?:#.*)?$")
 # Host-written subtables under template-owned tables: Codex stores each hook's
 # trusted hash under hooks.state, keyed by config path and hook position.
 HOST_SUBTABLES = {"hooks": {"state"}}
@@ -52,36 +51,6 @@ HOST_ROOT_KEYS = {"service_tier"}
 # A kept host-owned line ends with this marker, which no template carries, so a
 # root the merge wrote with a host choice in it never matches a template root.
 KEPT_MARKER = "# host choice, kept by the reconcile"
-
-
-def components(key: str) -> list[str]:
-    """Split a dotted table key into its components, honoring quoted parts."""
-    parts: list[str] = []
-    current = ""
-    quote = None
-    index = 0
-    key = key.strip()
-    while index < len(key):
-        char = key[index]
-        if quote:
-            if char == "\\" and quote == '"' and index + 1 < len(key):
-                current += key[index + 1]
-                index += 2
-                continue
-            if char == quote:
-                quote = None
-            else:
-                current += char
-        elif char in ('"', "'"):
-            quote = char
-        elif char == ".":
-            parts.append(current.strip())
-            current = ""
-        elif not char.isspace():
-            current += char
-        index += 1
-    parts.append(current.strip())
-    return parts
 
 
 def host_subtable(parts: list[str]) -> bool:
@@ -97,17 +66,35 @@ def owned_view(name: str, value):
 
 
 def split_sections(text: str) -> tuple[str, list[tuple[list[str], str]]]:
-    """Split TOML text into its root text and top-level (key components, text) sections."""
+    """Use the TOML parser to distinguish headers from multiline value content.
+
+    Parsing prefixes costs more than a regex, but config files are small and
+    this avoids a second, incomplete TOML lexer in a preservation boundary.
+    """
     root: list[str] = []
     sections: list[tuple[list[str], list[str]]] = []
+    offset = 0
     for line in text.splitlines(keepends=True):
-        header = HEADER.match(line)
-        if header and not line.lstrip().startswith("#"):
-            sections.append((components(header.group("key")), [line]))
+        parts = []
+        if line.lstrip().startswith("["):
+            try:
+                table = tomllib.loads(line)
+                tomllib.loads(text[:offset])
+            except tomllib.TOMLDecodeError:
+                pass
+            else:
+                while table:
+                    key, table = next(iter(table.items()))
+                    parts.append(key)
+                    if isinstance(table, list):
+                        table = table[0]
+        if parts:
+            sections.append((parts, [line]))
         elif sections:
             sections[-1][1].append(line)
         else:
             root.append(line)
+        offset += len(line)
     return "".join(root), [(parts, "".join(lines)) for parts, lines in sections]
 
 
@@ -115,8 +102,8 @@ def load(path: str) -> tuple[str, dict]:
     text = Path(path).read_text(encoding="utf-8")
     try:
         return text, tomllib.loads(text)
-    except tomllib.TOMLDecodeError as error:
-        raise SystemExit(f"reconcile-codex-config: {path} is not valid TOML: {error}")
+    except tomllib.TOMLDecodeError:
+        raise ValueError("input is not valid TOML") from None
 
 
 def template_owned(template: dict) -> set[str]:
@@ -176,6 +163,8 @@ def merge(template_path: str, host_path: str | None) -> str:
     template_root, template_sections = split_sections(template_text)
     output = template_root
     host_sections: list[str] = []
+    preserved = {}
+    preserved_subtables = {}
     if host_path is not None:
         host_text, host = load(host_path)
         owned = template_owned(template)
@@ -186,6 +175,12 @@ def merge(template_path: str, host_path: str | None) -> str:
         if kept:
             output = output.rstrip("\n") + "\n" + "".join(kept) + "\n"
         host_sections = [text for parts, text in sections if parts[0] not in owned or host_subtable(parts)]
+        section_keys = {parts[0] for parts, _ in sections}
+        preserved = {key: value for key, value in host.items() if key not in owned and key in section_keys}
+        if kept:
+            preserved.update({key: host[key] for key in HOST_ROOT_KEYS if key in host and key not in owned and host_owned(key, host[key])})
+        preserved_subtables = {name: {key: value for key, value in host.get(name, {}).items() if key in keys}
+                              for name, keys in HOST_SUBTABLES.items() if isinstance(host.get(name), dict)}
     output += "".join(text for _, text in template_sections)
     if not output.endswith("\n"):
         output += "\n"
@@ -193,11 +188,16 @@ def merge(template_path: str, host_path: str | None) -> str:
         output += "\n" + text.strip("\n") + "\n"
     try:
         result = tomllib.loads(output)
-    except tomllib.TOMLDecodeError as error:
-        raise SystemExit(f"reconcile-codex-config: reconciled config does not parse: {error}")
+    except tomllib.TOMLDecodeError:
+        raise ValueError("reconciled config does not parse; host layout is unsupported") from None
     for key, value in template.items():
         if owned_view(key, result.get(key)) != value:
-            raise SystemExit(f"reconcile-codex-config: host state overrode template key {key}")
+            raise ValueError("host state overrode template ownership")
+    if set(result) != set(template) | set(preserved) or any(result.get(key) != value for key, value in preserved.items()) or any(
+        not isinstance(result.get(name), dict) or any(result[name].get(key) != value for key, value in values.items())
+        for name, values in preserved_subtables.items()
+    ):
+        raise ValueError("host-owned semantics would change; host layout is unsupported")
     return output
 
 
@@ -234,4 +234,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (OSError, ValueError):
+        print("reconcile-codex-config: invalid input or unsupported layout; no replacement emitted", file=sys.stderr)
+        raise SystemExit(2) from None

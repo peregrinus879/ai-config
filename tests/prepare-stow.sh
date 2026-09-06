@@ -7,6 +7,8 @@ set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 TMP=$(mktemp -d)
 trap 'rm -rf -- "$TMP"' EXIT
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+unset GATE # Fixture homes must not inherit Make's exported host endpoint.
 
 fail() {
   printf 'FAIL: %s\n' "$1" >&2
@@ -20,7 +22,7 @@ make_clone() {
     "$repo/claude-code/.claude/skills/spar/scripts" \
     "$repo/agents/.agents/skills/spar/scripts" "$repo/codex/.codex" \
     "$repo/opencode/.config/opencode" \
-    "$repo/scripts" "$repo/templates/codex"
+    "$repo/scripts" "$repo/templates/codex" "$repo/templates/hooks"
   printf 'tracked\n' >"$repo/claude-code/.claude/settings.json"
   printf 'guidance\n' >"$repo/agents/.agents/shared-guidance.md"
   printf 'skill\n' >"$repo/agents/.agents/skills/commit/SKILL.md"
@@ -41,6 +43,9 @@ make_clone() {
   cp -- "$ROOT/scripts/prepare-stow.sh" "$repo/scripts/prepare-stow.sh"
   cp -- "$ROOT/scripts/reconcile-codex-config.py" "$repo/scripts/reconcile-codex-config.py"
   cp -- "$ROOT/templates/codex/config.toml" "$repo/templates/codex/config.toml"
+  cp -- "$ROOT/templates/hooks/commit-gate" "$repo/templates/hooks/commit-gate"
+  cp -- "$ROOT/Makefile" "$repo/Makefile"
+  git -C "$repo" init -q
 }
 
 toml_value() { # file dotted.key
@@ -167,8 +172,161 @@ case_skill_links() {
   if HOME=$home bash "$repo/scripts/prepare-stow.sh" --link-skills >/dev/null 2>&1; then fail "link-skills repointed a foreign link"; fi
   [[ $(readlink -- "$home/.agents/skills/spar") == "$TMP/links/elsewhere" ]] || fail "link-skills changed a foreign link"
   rm "$home/.agents/skills/spar"
+  # A moved clone's selected skill link is recognized, unlike a foreign dangling link.
+  ln -s "$TMP/links/old/agents/.agents/skills/spar" "$home/.agents/skills/spar"
+  HOME=$home bash "$repo/scripts/prepare-stow.sh" --link-skills >/dev/null || fail "a recognized moved-clone skill link was not migrated"
+  [[ $(readlink -f -- "$home/.agents/skills/spar") == "$repo/agents/.agents/skills/spar" ]] || fail "moved-clone skill link did not reach this clone"
   HOME=$home bash "$repo/scripts/prepare-stow.sh" --unlink-skills >/dev/null || fail "unlink-skills failed"
   [[ ! -e $home/.agents/skills/commit && -d $home/.agents/skills ]] || fail "unlink-skills left the link or removed the root"
+}
+
+case_skill_preflight() {
+  local kind home repo before after out mode
+  for kind in file dangling foreign dangling-root; do
+    home="$TMP/preflight-$kind/home"; repo="$TMP/preflight-$kind/eyragents"
+    mkdir -p "$home/.agents/skills/commit/scripts" "$home/.agents/skills/spar/scripts"
+    make_clone "$repo"
+    ln -s "$repo/agents/.agents/skills/commit/SKILL.md" "$home/.agents/skills/commit/SKILL.md"
+    ln -s "$repo/codex/.agents/skills/commit/scripts/retired" "$home/.agents/skills/commit/scripts/retired"
+    ln -s "$repo/agents/.agents/skills/spar/scripts/spar-claude" "$home/.agents/skills/spar/scripts/spar-claude"
+    case $kind in
+      file) printf 'keep my notes\n' >"$home/.agents/skills/spar/notes.md" ;;
+      dangling) ln -s "$TMP/missing/foreign-tool" "$home/.agents/skills/spar/scripts/foreign" ;;
+      foreign) ln -s "$repo/agents/.agents/skills/commit/scripts/commit-apply" "$home/.agents/skills/spar/scripts/foreign" ;;
+      dangling-root)
+        rm -r -- "$home/.agents/skills/spar"
+        ln -s "$TMP/missing/foreign-skill" "$home/.agents/skills/spar" ;;
+    esac
+    before=$(find "$home" -printf '%y %p %l\n' | sort)
+    for mode in --check-skills --link-skills --unlink-skills ''; do
+      local -a args=()
+      [[ -z $mode ]] || args=("$mode")
+      if out=$(HOME=$home bash "$repo/scripts/prepare-stow.sh" "${args[@]}" 2>&1); then fail "preflight accepted $kind via $mode"; fi
+      [[ $out == *foreign* || $out == *unmanaged* ]] || fail "unexpected preflight refusal: $out"
+      after=$(find "$home" -printf '%y %p %l\n' | sort)
+      [[ $before == "$after" ]] || fail "$mode partially migrated skills before refusing $kind"
+      [[ $kind != file || $(<"$home/.agents/skills/spar/notes.md") == 'keep my notes' ]] || fail "foreign file contents changed"
+    done
+    if HOME=$home make --no-print-directory -C "$repo" -j8 restow clean >/dev/null 2>&1; then fail "Make accepted a conflicting skill"; fi
+    [[ $before == "$(find "$home" -printf '%y %p %l\n' | sort)" ]] || fail "Make cleaned before all selected skills passed preflight"
+  done
+}
+
+case_make_guards() {
+  local home="$TMP/make/home" repo="$TMP/make/eyragents" other="$TMP/make/deployed" bin="$TMP/make/bin" target out
+  mkdir -p "$home/.claude" "$bin"
+  make_clone "$repo"
+  make_clone "$other"
+  ln -s "$other/claude-code/.claude/settings.json" "$home/.claude/settings.json"
+  ln -s "$TMP/make/old/claude-code/.claude/hooks" "$home/.claude/hooks"
+  cat >"$bin/bash" <<'SH'
+#!/bin/bash
+if [[ ${1:-} == scripts/prepare-stow.sh ]]; then
+  case ${2:-} in
+    --require-clone) printf 'guard\n' >>"$EYR_TEST_EVENTS"; sleep 0.05 ;;
+    --check-skills) ;;
+    *) printf 'write\n' >>"$EYR_TEST_EVENTS" ;;
+  esac
+fi
+exec /bin/bash "$@"
+SH
+  chmod +x "$bin/bash"
+  for target in stow unstow restow clean install-gate migrate-codex-config 'clean restow' 'restow clean'; do
+    : >"$TMP/make/events"
+    local -a goals=()
+    read -r -a goals <<<"$target"
+    if out=$(HOME=$home PATH="$bin:$PATH" EYR_TEST_EVENTS="$TMP/make/events" make --no-print-directory -C "$repo" -j8 "${goals[@]}" 2>&1); then
+      fail "Make accepted a wrong deployed clone: $target"
+    fi
+    [[ $out == *'another clone'* ]] || fail "Make failed for the wrong reason ($target): $out"
+    [[ $(<"$TMP/make/events") != *write* ]] || fail "cleanup started before the clone guard refused: $target"
+    [[ -L $home/.claude/hooks && $(readlink -- "$home/.claude/settings.json") == "$other/claude-code/.claude/settings.json" ]] || fail "Make changed links before refusal: $target"
+  done
+  for target in '' --link-skills --unlink-skills --migrate-codex-config; do
+    local -a args=()
+    [[ -z $target ]] || args=("$target")
+    if HOME=$home bash "$repo/scripts/prepare-stow.sh" "${args[@]}" >/dev/null 2>&1; then fail "direct preparation accepted a wrong clone: $target"; fi
+    [[ -L $home/.claude/hooks ]] || fail "direct preparation cleaned before refusal"
+  done
+  rm -- "$home/.claude/settings.json"
+  ln -s "$repo/claude-code/.claude/settings.json" "$home/.claude/settings.json"
+  : >"$TMP/make/events"
+  HOME=$home PATH="$bin:$PATH" EYR_TEST_EVENTS="$TMP/make/events" make --no-print-directory -C "$repo" -j8 clean >/dev/null || fail "guarded Make clean failed in the deployed fixture"
+  [[ $(<"$TMP/make/events") == $'guard\nwrite' && ! -L $home/.claude/hooks ]] || fail "guard and cleanup were not ordered"
+}
+
+case_install_gate() {
+  local scenario base home repo gate before after out target
+  for scenario in override-repo agents-fold hooks-fold endpoint-link dangling-endpoint hardlink override-expression home-in-repo home-in-other-repo; do
+    base="$TMP/install-$scenario"; home="$base/home"; repo="$base/eyragents"
+    mkdir -p "$home" "$base/bin"
+    make_clone "$repo"
+    gate="$home/.agents/hooks/commit-gate"
+    case $scenario in
+      agents-fold) ln -s "$repo/agents/.agents" "$home/.agents" ;;
+      hooks-fold)
+        mkdir "$home/.agents"
+        ln -s "$repo/templates/hooks" "$home/.agents/hooks" ;;
+      endpoint-link|dangling-endpoint|hardlink)
+        mkdir -p "$home/.agents/hooks"
+        if [[ $scenario == endpoint-link ]]; then ln -s "$repo/templates/hooks/commit-gate" "$gate"
+        elif [[ $scenario == hardlink ]]; then ln "$repo/templates/hooks/commit-gate" "$gate"
+        else ln -s "$repo/templates/hooks/absent" "$gate"; fi ;;
+      override-repo) gate="$repo/templates/hooks/commit-gate" ;;
+      override-expression) gate="\$(shell touch INSTALL_MARKER)" ;;
+      home-in-repo) home="$repo/fake-home"; mkdir "$home"; gate="$home/.agents/hooks/commit-gate" ;;
+      home-in-other-repo)
+        make_clone "$base/other-repo"
+        home="$base/other-repo/fake-home"; mkdir "$home"; gate="$home/.agents/hooks/commit-gate" ;;
+    esac
+    # A rejecting guard must not invoke install, even when the fold is ours.
+    cat >"$base/bin/install" <<'SH'
+#!/bin/bash
+touch "$EYR_INSTALL_CALLED"
+exit 99
+SH
+    chmod +x "$base/bin/install"
+    before=$(find "$home" "$repo" -path '*/.git' -prune -o -printf '%y %p %l\n' | sort)
+    for target in install-gate verify-deploy; do
+      if out=$(HOME=$home PATH="$base/bin:$PATH" EYR_INSTALL_CALLED="$base/install-called" make --no-print-directory -C "$repo" "$target" "GATE=$gate" 2>&1); then
+        fail "$target accepted $scenario"
+      fi
+      [[ $out == *gate* || $out == *GATE* ]] || fail "$target failed for an unrelated reason: $out"
+      [[ $out != *'installed commit gate matches'* ]] || fail "$target falsely attested the gate for $scenario"
+      [[ ! -e $base/install-called && ! -e $repo/INSTALL_MARKER ]] || fail "install or Make expansion ran before refusal: $scenario"
+      after=$(find "$home" "$repo" -path '*/.git' -prune -o -printf '%y %p %l\n' | sort)
+      [[ $before == "$after" ]] || fail "$target refusal changed the layout: $scenario"
+      cmp -s "$ROOT/templates/hooks/commit-gate" "$repo/templates/hooks/commit-gate" || fail "$target changed source bytes: $scenario"
+    done
+  done
+  base="$TMP/install-normal"; home="$base/home"; repo="$base/eyragents"
+  mkdir -p "$home"
+  make_clone "$repo"
+  HOME=$home make --no-print-directory -C "$repo" install-gate >/dev/null || fail "standalone safe gate installation failed"
+  gate="$home/.agents/hooks/commit-gate"
+  [[ -f $gate && ! -L $gate && -x $gate && -d $home/.agents/hooks && ! -L $home/.agents/hooks ]] || fail "installed gate is not host-local with real parents"
+  HOME=$home make --no-print-directory -C "$repo" -j8 stow >/dev/null 2>&1 || fail "normal stow failed with the hardened gate installer"
+  cmp -s "$repo/templates/hooks/commit-gate" "$gate" || fail "normal stow did not install the gate copy"
+  [[ $(stat -c '%i' -- "$gate") != "$(stat -c '%i' -- "$repo/templates/hooks/commit-gate")" ]] || fail "installed gate shares the source inode"
+  before=$(stat -c '%i %a %s %y %z' -- "$gate")
+  HOME=$home bash "$repo/scripts/prepare-stow.sh" --check-gate >/dev/null || fail "valid installed gate was refused"
+  [[ $before == "$(stat -c '%i %a %s %y %z' -- "$gate")" ]] || fail "gate verification rewrote the endpoint"
+  for scenario in missing drift nonexecutable; do
+    cp -- "$repo/templates/hooks/commit-gate" "$gate"
+    chmod 755 "$gate"
+    case $scenario in
+      missing) rm -- "$gate" ;;
+      drift) printf 'changed gate\n' >>"$gate" ;;
+      nonexecutable) chmod a-x "$gate" ;;
+    esac
+    before=$(find "$home" -printf '%y %p %l\n' | sort)
+    if out=$(HOME=$home bash "$repo/scripts/prepare-stow.sh" --check-gate 2>&1); then fail "gate verification accepted $scenario"; fi
+    [[ $out == *'installed commit gate is missing, not executable, unreadable, or drifted'* ]] || fail "gate verification refused $scenario for the wrong reason: $out"
+    [[ $before == "$(find "$home" -printf '%y %p %l\n' | sort)" ]] || fail "gate verification changed layout for $scenario"
+  done
+  home="$base/empty-home"; mkdir "$home"
+  if HOME=$home bash "$repo/scripts/prepare-stow.sh" --check-gate >/dev/null 2>&1; then fail "gate verification accepted an undeployed home"; fi
+  [[ ! -e $home/.agents ]] || fail "gate verification created directories"
 }
 
 case_migration() {
@@ -357,5 +515,8 @@ print(tomllib.load(open(sys.argv[1], "rb")).get("service_tier", ""))' "$config")
 case_clean_links
 case_no_folding
 case_skill_links
+case_skill_preflight
+case_make_guards
+case_install_gate
 case_migration
 printf 'ok: prepare-stow removes only dangling managed links, links skill directories, and migrates Codex config safely\n'
