@@ -13,7 +13,7 @@ TOOL_PACKAGES := claude-code codex opencode
 AGENTS_STOW := $(STOW) --ignore='\.agents/skills'
 SHELLCHECK_FILES := claude-code/.claude/statusline.sh \
   templates/hooks/commit-gate \
-  $(filter-out %/spar-payload-scan,$(wildcard agents/.agents/skills/*/scripts/*)) \
+  $(filter-out %/spar-payload-scan %.py,$(wildcard agents/.agents/skills/*/scripts/*)) \
   $(wildcard scripts/*.sh tests/*.sh)
 
 .PHONY: help stow unstow dry-run restow require-clone install-gate migrate-codex-config lint test check verify-deploy verify canary clean
@@ -92,7 +92,8 @@ migrate-codex-config:
 lint:
 	shellcheck -s bash $(SHELLCHECK_FILES)
 	python3 -I -c 'import sys; [compile(open(p, "rb").read(), p, "exec") for p in sys.argv[1:]]' \
-	  agents/.agents/skills/spar/scripts/spar-payload-scan scripts/reconcile-codex-config.py tests/config-contracts.py
+	  agents/.agents/skills/spar/scripts/spar-payload-scan scripts/reconcile-codex-config.py tests/config-contracts.py \
+	  agents/.agents/skills/commit/scripts/governance.py tests/commit-governance.py
 	node --check opencode/.config/opencode/plugins/commit-gate.js
 	@echo "ok:   lint"
 

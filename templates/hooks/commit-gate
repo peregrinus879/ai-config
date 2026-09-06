@@ -15,9 +15,9 @@
 # an alias whose definition contains one of them, by an inline `-c alias.`
 # definition, or by a subcommand that is not a literal word, anywhere in the
 # text including inside quotes, is denied, and so is any dashed executable
-# such as git-commit; every occurrence is checked, not just the first. What
-# the gate guarantees is that the intended branch advances only to the
-# recorded candidate; a script that hides a commit is outside its sight. A
+# such as git-commit; every occurrence is checked, not just the first. This
+# lexical gate blocks the named command forms, not code hidden in scripts or
+# arbitrary shell expansion. commit-apply verifies its own result. A
 # false positive costs one rewritten command, or writing prose that mentions
 # such a command with the file tools instead of a shell heredoc; a miss would
 # cost the gate. The hook reads the JSON the tool sends on stdin (Claude Code
@@ -30,19 +30,28 @@
 # the Codex sandbox, so its executable must not be writable from inside it.
 set -euo pipefail
 
-input=$(cat)
-command=$(jq -r '
-  if (.tool_input.command | type) == "array" then (.tool_input.command | join(" "))
-  else (.tool_input.command // .tool_input.cmd // "") end' <<<"$input" 2>/dev/null || true)
-[[ -n $command ]] || exit 0
-cwd=$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null || true)
-cwd=${cwd:-$PWD}
-
 deny() {
   jq -n --arg reason "$1" '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}'
   printf 'commit-gate: %s\n' "$1" >&2
   exit 2
 }
+
+input=$(cat)
+jq -se 'length == 1 and (.[0] | type == "object")' <<<"$input" >/dev/null 2>&1 || deny 'malformed hook JSON; command protection could not be checked'
+if jq -e '.tool_name and (.tool_name | test("^(Bash|bash|shell|shell_command)$") | not)
+  and (.tool_input.command == null) and (.tool_input.cmd == null)' <<<"$input" >/dev/null 2>&1; then
+  exit 0
+fi
+command=$(jq -er '
+  def valid: type == "string" and length > 0 and (contains("\u0000") | not);
+  if .tool_input.command != null and .tool_input.cmd != null and .tool_input.command != .tool_input.cmd
+  then error("conflicting commands") else . end |
+  (.tool_input.command // .tool_input.cmd) |
+  if type == "array" and length > 0 and all(.[]; valid) then join(" ")
+  elif valid then .
+  else error("invalid shell command") end' <<<"$input" 2>/dev/null) || deny 'malformed Bash input; command protection could not be checked'
+cwd=$(jq -er '(.cwd // "") | if type == "string" then . else error("invalid cwd") end' <<<"$input" 2>/dev/null) || deny 'malformed hook cwd'
+cwd=${cwd:-$PWD}
 
 # Normalize the shell-token tricks that split, quote, or continue a word:
 # quotes of every kind disappear, backslash-newline joins, and any escaped
@@ -95,12 +104,28 @@ fi
 # were stripped above; the match backtracks to a literal subcommand.
 options="([ \t]+${argopt}([ \t]+[^-[:space:]][^[:space:]]*)*|[ \t]+(${bare}))*"
 pattern="${boundary}${prefix}git(${options})[ \t]+(${subcommands})([^[:alnum:]_-]|$)(${segment})"
+# Exempt only an unambiguous, literal ff-only operation. Unknown options may
+# consume the apparent --ff-only as an argument, or override its semantics.
+ff_only() {
+  local token seen=0
+  local -a tokens
+  read -r -a tokens <<<"$1"
+  for token in "${tokens[@]}"; do
+    case $token in
+      --ff-only) seen=1 ;;
+      -q|--quiet|-v|--verbose|--progress|--no-progress|--no-rebase|--no-edit|--stat|--no-stat|--prune|--no-tags|--tags) ;;
+      -*) return 1 ;;
+      *) [[ $token =~ ^[[:alnum:]_./:@+~-]+$ ]] || return 1 ;;
+    esac
+  done
+  (( seen == 1 ))
+}
 rest=$text
 while [[ $rest =~ $pattern ]]; do
   match=${BASH_REMATCH[0]}
   sub=${BASH_REMATCH[9]}
   tail=${BASH_REMATCH[11]}
-  if [[ ($sub == merge || $sub == pull) && $tail =~ (^|[[:space:]])--ff-only([[:space:]]|$) ]] ||
+  if { [[ $sub == merge || $sub == pull ]] && ff_only "$tail"; } ||
      [[ $sub == stash && $tail =~ ^[[:space:]]*(list|show)([[:space:]]|$) ]]; then
     rest=${rest#*"$match"}
     continue

@@ -1,57 +1,6 @@
 #!/usr/bin/env bash
-# publish-verify - after H's push: confirm the destination and the published state.
-#
-# Usage: publish-verify
-#
-# Reads the binding publish-bind recorded, confirms the destination's tracking
-# ref equals the reviewed id and the local branch is neither ahead nor behind,
-# then runs the repository's published verification when it defines one:
-# `make verify-published REV=<id>` or `npm run verify-published -- <id>`. A
-# repository without the target is reported as pushed without published
-# verification. The binding record is removed on success.
-#
-# Exit codes: 0 verified, 2 destination differs (stop for H), 3 no binding
-# recorded, 4 published verification failed, 64 usage.
+# Observe the bound push destination with ls-remote, not a tracking-ref guess.
+# Usage: publish-verify ID
+# Optional repository verify-published targets remain separate from CI status.
 set -euo pipefail
-
-record_root=${EYRAGENTS_RECORD_ROOT:-/tmp/eyragents-$(id -u)}
-[[ $# -eq 0 ]] || { printf 'usage: publish-verify\n' >&2; exit 64; }
-fail() {
-  printf 'publish-verify: %s\n' "$1" >&2
-  exit "${2:-3}"
-}
-
-toplevel=$(git rev-parse --show-toplevel 2>/dev/null) || fail 'not inside a Git repository'
-record_dir="$record_root/$(printf '%s' "$toplevel" | sha256sum | cut -c1-16)"
-[[ -f $record_dir/publish ]] || fail 'no binding recorded; run publish-bind before the push'
-remote='' branch='' local_branch='' reviewed='' base=''
-while IFS='=' read -r key value; do
-  case $key in
-    remote) remote=$value ;;
-    branch) branch=$value ;;
-    local) local_branch=$value ;;
-    reviewed) reviewed=$value ;;
-    base) base=$value ;;
-  esac
-done <"$record_dir/publish"
-
-tracking=$(git rev-parse --verify -q "refs/remotes/$remote/$branch" || printf none)
-[[ $tracking == "$reviewed" ]] ||
-  fail "destination $remote/$branch is at $tracking, the reviewed commit is $reviewed (base was $base); stop for H's decision" 2
-ahead=$(git rev-list --count "refs/remotes/$remote/$branch..$local_branch")
-behind=$(git rev-list --count "$local_branch..refs/remotes/$remote/$branch")
-(( ahead == 0 && behind == 0 )) || fail "$local_branch is ahead $ahead and behind $behind of $remote/$branch; stop for H's decision" 2
-printf 'pushed: %s to %s/%s (ahead 0, behind 0)\n' "$reviewed" "$remote" "$branch"
-
-cd -- "$toplevel"
-if [[ -f Makefile ]] && grep -qE '^verify-published:' Makefile; then
-  printf 'published verification: make verify-published\n'
-  make verify-published REV="$reviewed" || fail 'published verification failed' 4
-elif [[ -f package.json ]] && jq -e '.scripts["verify-published"]' package.json >/dev/null 2>&1; then
-  printf 'published verification: npm run verify-published\n'
-  npm run verify-published -- "$reviewed" || fail 'published verification failed' 4
-else
-  printf 'published verification: none defined; reported as pushed without published verification\n'
-fi
-rm -f -- "$record_dir/publish"
-printf 'ok:   publish verified\n'
+exec python3 -I "$(dirname -- "$(realpath -e -- "${BASH_SOURCE[0]}")")/../../commit/scripts/governance.py" verify "$@"

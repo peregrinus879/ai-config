@@ -51,7 +51,7 @@ eyragents/
 │   ├── shared-guidance.md                # canonical cross-tool policy
 │   ├── agents/auditor.md                 # the auditor's charter, shared by every tool's agent
 │   ├── skills/{commit,publish,spar}/SKILL.md   # canonical skills; Codex and OpenCode read them here
-│   ├── skills/commit/scripts/{commit-candidate,commit-apply}   # the procedure behind the commit skill
+│   ├── skills/commit/scripts/{commit-candidate,commit-apply,governance.py}   # candidate/publication receipts and commit procedure
 │   ├── skills/publish/scripts/{publish-bind,publish-verify,publish-clip}   # the procedure behind the publish skill
 │   └── skills/spar/scripts/{review-brief,spar-claude,spar-codex,spar-payload-scan}   # the review brief, reviewer bridges, and the payload scanner
 ├── claude-code/                          # Claude Code package
@@ -104,16 +104,16 @@ The `spar` workflow uses subscription-authenticated, read-only cross-vendor revi
 
 ### Prerequisites
 
-- Git and GNU Stow
-- jq, Python, and Node.js
+- Git, GNU Make, and GNU Stow
+- jq, Python, and Node.js (required for EyrAgents verification, not the EyrWSL baseline)
 - ShellCheck
-- GNU coreutils and util-linux (`setsid`)
+- GNU coreutils and util-linux (`flock`, `setsid`)
 - Claude Code, Codex, and OpenCode installed through [mise](https://mise.jdx.dev) under `~/.local/share/mise`, where the Codex sandbox can execute them: Omarchy's own wrappers on the desktop, eyrwsl's `mise` package on WSL
 
 On Arch Linux:
 
 ```bash
-sudo pacman -S --needed git stow jq python shellcheck util-linux
+sudo pacman -Syu --needed git make stow jq python nodejs shellcheck util-linux
 ```
 
 ### Clone
@@ -158,10 +158,12 @@ OpenCode has no untrusted mode: `OPENCODE_DISABLE_PROJECT_CONFIG=1 OPENCODE_DISA
 
 ## Workflows
 
-- `commit` runs the repository's gates, records the candidate with `commit-candidate`, presents it with its tree id and gate report, and commits it verbatim with `commit-apply` only after approval; `commit-gate`, a pre-tool hook in all three tools, denies every `git commit` a tool runs, so nothing but the recorded candidate can be committed. When the request is done it hands off to `publish`.
-- `publish` binds the push with `publish-bind`, which reviews the commits between the destination's tracking ref and the reviewed commit, scans them, and prints the command with a lease bound to both ends; after the user's push, reported through a selector like the commit packet's, `publish-verify` confirms the destination and, where the repository defines `verify-published`, the published state.
+- `commit` runs the repository's gates and presents an exact candidate and its gate evidence for approval. `commit-candidate -- PATH...` records the prepared index without staging; explicit `--stage` stages whole literal intended paths and refuses partially staged mixed files before staging anything. Its immutable `candidate-id` identifies the tree, parent, branch, message, and identity; `commit-apply ID` requires that exact approved ID. `commit-candidate --show ID` displays it; `--clear ID` rejects it without restoring the index or worktree. Apply uses an isolated index with normal hooks and checks the actual commit. Rejection compensates only by a safe compare-and-swap of that invocation's uniquely identified commit; otherwise it preserves state and stops for H, never resets an unexplained tip.
+- `publish` uses `publish-bind` to record an immutable `binding-id` covering the reviewed commit, tracking baseline, resolved push endpoint, branch, and relevant configuration. It scans every new commit's raw metadata, explicit per-parent merge patches, the flat diff, and complete newly reachable blobs and tree paths, including transient content removed before the tip. Its H-run command preserves `publish-bind --check ID` immediately before the explicit one-branch push, with an exact-base lease and no incidental tags or submodule pushes. `publish-verify ID` observes the bound push endpoint through read-only `ls-remote`; local tracking is reported separately, CI remains a separate check, and `verify-published` runs only where defined. Remote equality is a point-in-time observation, not proof of who pushed.
 - `spar` runs an optional read-only cross-model review of a plan, diff, or decision: `review-brief` assembles the artifact from the intent, the repository state, the gate results as run, and the change, and `~/.agents/skills/spar/scripts/spar-<reviewer> review "<request>" <artifact>...` from the repository. Claude Code reviews with `spar-codex`, OpenCode with `spar-claude`, and a Codex session hands the request to the user because its profile cannot launch the bridge. Consult the maintenance ledger for active bridge availability.
 - `eyrsync`, this repository's own skill, syncs the harness against the tools' official documentation and changelogs and the Agent Skills specification, and the sibling repositories against the harness where they depend on it; run it when a tool changes an interface or moves to a new major version, or when the harness changes something a sibling depends on.
+
+Receipts do not attest approval or gates: checks against a worktree do not attest a different staged tree, and untracked files need separate classification. Candidate and binding IDs coexist; there is no implicit latest-record apply/verify. Drift requires a new receipt and review. Binary/non-UTF-8/oversized or otherwise unscannable objects produce a partial scan with bound IDs, sizes, reasons and historical tree/path locations; H inspects those exact objects before approval or publication. Normal pre-push hooks remain enabled, with their effective targets/content digests bound for review. Actual sensitive/identity findings, unsafe hook sources, first publication without a tracking baseline, configured push options, and unsupported helpers still refuse; manual inspection is not a bypass for these. See the skills for the procedure and the ledger for active limits.
 
 Temporary review artifacts must be inside the caller's private, owned `TMPDIR` below `/tmp` or `/var/tmp`, not a shared tool root; repository artifacts remain supported outside sensitive paths and Git internals. The bridges inline scanned artifacts, so reviewers need no scratch-write grant. Bridge stdout is reply-only; stderr carries a validated reviewer ID and safe runtime provenance (`model`, `effort`, `tier`, `clientversion`), with `unknown` where the client does not expose a reliable value. Configured preferences are not substituted for effective runtime evidence.
 
