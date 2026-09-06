@@ -21,6 +21,8 @@ Co-Authored-By: <official display name of the active model> <provider no-reply a
 
 ## Before staging
 
+For substantial work, re-read the checkpoint's atomic change map established before implementation. Reconcile actual changes with it: each candidate contains one independently valid behavior with its tests and documentation, not one delegate's output. Assign shared-file hunks explicitly and keep runtime/configuration dependencies together. If the map is missing, stop and establish it before staging; do not treat a full-worktree gate pass as proof that an extracted candidate works. Cross-repository atomicity means reviewed companion commits and exact-pair verification, not one Git transaction. The map itself is not approval.
+
 1. Classify untracked files (`git ls-files --others --exclude-standard`) as intended new files or session scratch. Propose a disposition for scratch; never delete an untracked file without H's approval.
 2. Update documentation whose commands, paths, workflows, or listings changed, keeping each fact in its canonical owner. Create no documentation file unasked.
 3. Run the repository's gates, fixing and rerunning until each passes: the repository checks, `make lint` and `make check` when the Makefile defines them, else `npm run check` when the package defines it; then the host verification, `make restow` and `make verify` when defined, else `npm run verify`. A target that refuses because this is not its host or its deployed clone is skipped with that reason. The contract covers H's repositories; elsewhere run the checks the project documents.
