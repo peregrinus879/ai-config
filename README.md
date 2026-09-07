@@ -114,7 +114,7 @@ The `spar` workflow uses subscription-authenticated, read-only cross-vendor revi
 
 - Git, GNU Make, and GNU Stow
 - jq, Python, and Node.js (required for EyrAgents verification, not the EyrWSL baseline)
-- ShellCheck
+- ShellCheck 0.11.0 or newer
 - GNU coreutils and util-linux (`flock`, `setsid`)
 - Claude Code, Codex, and OpenCode installed through [mise](https://mise.jdx.dev) under `~/.local/share/mise`, where the Codex sandbox can execute them: Omarchy's own wrappers on the desktop, eyrwsl's `mise` package on WSL
 
@@ -201,6 +201,8 @@ make check
 ```
 
 After stowing, `make verify` runs both and adds deployment checks. GitHub Actions runs `make lint` and `make check` on every push to `main` and every pull request. Restart OpenCode after changing its config or skills because they load at process startup.
+
+CI uses the checksum-verified upstream ShellCheck 0.11.0 release instead of the runner's older distribution package.
 
 `make canary` is separate live behavioral smoke testing, not a repository gate or independent permission-dispatch proof. It makes up to six calls per tool: skills, reported gate denial with unchanged HEAD, README read, system read, external temporary fixture read, and fixture-marker non-disclosure. OpenCode reads its own fixture README and the preapproved `/usr/lib/os-release`; only its general external-temp check requires interactive approval and stays explicitly skipped. Each performed assertion requires a successful, nonempty reply. Exit 1 means failure; exit 2 means skipped or unverified checks; exit 0 means all selected behavioral checks passed. Verify remaining prompts interactively rather than bypassing them for green output. A moved/unreadable fixture HEAD stops the probe without resetting it. Mocks and static checks do not establish live behavior.
 
