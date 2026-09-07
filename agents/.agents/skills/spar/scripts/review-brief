@@ -3,9 +3,11 @@
 # Usage: review-brief --intent FILE --out NEW_FILE
 #        [--staged | --worktree | --range BASE..TIP | --plan]
 #        [--gate LITERAL_MAKE_TARGET]... [--no-gates]
-# Plan mode never runs gates or writes in the repository. External artifacts
-# require the caller's private TMPDIR accepted by spar-payload-scan. Fingerprints
-# are read-only observations, not Git trees or attestations of runtime/host inputs.
+# Plan mode never runs gates. Repository output is limited to new ignored,
+# untracked .eyr-plans/<workstream>/{audit,spar}/*.md files in owned private
+# directories; governance is reserved. No directories are created. External
+# artifacts require the caller's private TMPDIR accepted by spar-payload-scan.
+# Fingerprints are read-only observations, not Git trees or runtime attestations.
 # Plan mode observes HEAD/index only, never source contents. Change modes stream
 # safe source hashes without artifact-size limits; sensitive source paths refuse.
 # Exit: 0 artifact written (may be explicitly unverified), 1 diagnostic artifact
@@ -94,8 +96,44 @@ def main():
     path_preflight(intent)
     out = path_preflight(out)
     in_repo = out.startswith(root + "/")
-    if args.plan and in_repo:
-        fail("--plan output must be in private caller TMPDIR to keep the repository read-only", 64)
+    plan_directories = {}
+
+    def plan_output_preflight():
+        if not args.plan or not (in_repo or out_lexical.startswith(root + "/")):
+            return
+        relative = os.path.relpath(out_lexical, root)
+        match = re.fullmatch(r"\.eyr-plans/([A-Za-z0-9][A-Za-z0-9_-]*)/(audit|spar)/[^/]+\.md", relative)
+        if not match or match[1] == "governance":
+            fail("--plan repository output requires .eyr-plans/<workstream>/{audit,spar}/<file>.md; governance is reserved", 64)
+        if "GIT_INDEX_FILE" in os.environ:
+            fail("--plan repository output requires the repository's normal index", 64)
+        if out_lexical != out or os.path.realpath(out_lexical) != out_lexical:
+            fail("--plan repository output cannot use symlink aliases or parents", 2)
+        namespace = os.path.join(root, ".eyr-plans")
+        workstream = os.path.join(namespace, match[1])
+        plan_directories.update({namespace: 0o022, workstream: 0o077, os.path.dirname(out): 0o077})
+        for directory, forbidden in plan_directories.items():
+            try:
+                metadata = os.lstat(directory)
+            except OSError:
+                fail("--plan artifact directories must already exist and be accessible", 2)
+            if (not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid()
+                    or metadata.st_mode & forbidden
+                    or (directory != namespace and stat.S_IMODE(metadata.st_mode) != 0o700)):
+                fail("--plan artifact directories must be real, owned and private (top .eyr-plans may be 0755)", 2)
+        if git("--literal-pathspecs", "ls-files", "--cached", "-z", "--", relative):
+            fail("--plan repository output must not be tracked", 64)
+        ignored = subprocess.run(
+            ["git", "check-ignore", "--quiet", "--no-index", "--", relative],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+        ).returncode
+        if ignored == 1:
+            fail("--plan repository output must already be ignored by Git", 64)
+        if ignored:
+            fail("read-only Git ignore query failed")
+
+    plan_output_preflight()
     if os.path.lexists(out) or os.path.lexists(out_lexical):
         fail("output exists; written as a new file only", 64)
     out_dir = os.path.dirname(out)
@@ -279,6 +317,7 @@ def main():
     # Pin the parent and exclusively create only after the complete scan. A
     # raced file/link is never replaced, and no unscanned draft touches disk.
     path_preflight(out)
+    plan_output_preflight()
     directory = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
     try:
         parent_path = ""
@@ -291,6 +330,12 @@ def main():
                 metadata = os.fstat(directory)
                 if metadata.st_uid != os.getuid() or metadata.st_mode & 0o077:
                     raise OSError("scratch is no longer private")
+            if parent_path in plan_directories:
+                metadata = os.fstat(directory)
+                forbidden = plan_directories[parent_path]
+                if (metadata.st_uid != os.getuid() or metadata.st_mode & forbidden
+                        or (forbidden == 0o077 and stat.S_IMODE(metadata.st_mode) != 0o700)):
+                    raise OSError("plan artifact directory is no longer owned/private")
     except OSError:
         os.close(directory)
         fail("output parent changed or cannot be opened without links", 2)

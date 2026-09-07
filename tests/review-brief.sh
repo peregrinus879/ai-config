@@ -8,6 +8,8 @@ exec /usr/bin/python3 -I - "$ROOT" <<'PY'
 import hashlib
 import os
 from pathlib import Path
+import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -77,7 +79,8 @@ with tempfile.TemporaryDirectory(prefix="review-brief.", dir=os.environ.get("TMP
     def run(expected=0, *args, intent_path=intent, output_path=output, overrides=None, cwd=repo):
         result = subprocess.run(
             [str(brief), "--intent", str(intent_path), "--out", str(output_path), *args],
-            cwd=cwd, env={**env, **(overrides or {})}, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20,
+            cwd=cwd, env={name: value for name, value in {**env, **(overrides or {})}.items() if value is not None},
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20,
         )
         check(result.returncode == expected,
               f"expected exit {expected}, got {result.returncode}: {result.stderr.decode()}")
@@ -87,9 +90,17 @@ with tempfile.TemporaryDirectory(prefix="review-brief.", dir=os.environ.get("TMP
         if output.exists():
             output.unlink()
 
-    def snapshot():
-        return {str(path.relative_to(repo)): (path.stat().st_mode, hashlib.sha256(path.read_bytes()).hexdigest())
-                for path in repo.rglob("*") if path.is_file()}
+    def snapshot(base=repo, exclude=None):
+        observed = {}
+        for path in base.rglob("*"):
+            if path == exclude:
+                continue
+            metadata = path.lstat()
+            content = (hashlib.sha256(path.read_bytes()).hexdigest() if stat.S_ISREG(metadata.st_mode)
+                       else os.readlink(path) if stat.S_ISLNK(metadata.st_mode) else None)
+            observed[str(path.relative_to(base))] = (metadata.st_mode, metadata.st_uid, metadata.st_gid,
+                                                   metadata.st_nlink, content)
+        return observed
 
     before = snapshot()
     marker = scratch / "gate-marker"
@@ -379,6 +390,198 @@ with tempfile.TemporaryDirectory(prefix="review-brief.", dir=os.environ.get("TMP
     check(repo_output.exists() and "output creates a repository file" in repo_output.read_text(), "repository output scope wrong")
     _, result = run(64, "--no-gates", cwd=repo / "sub", intent_path=Path("intent.md"), output_path=Path("brief.md"))
     check(b"written as a new file only" in result.stderr, "repository output no-clobber diagnostic missing")
+    cases += 1
+
+    # The plan exception owns only a new ignored Markdown leaf in either lane.
+    plans = repo / ".eyr-plans"
+    plans.mkdir(mode=0o700)
+    plans.chmod(0o755)
+    stream = plans / "artifact-tests"
+    stream.mkdir(mode=0o700)
+    lanes = [stream / lane for lane in ("audit", "spar")]
+    for lane in lanes:
+        lane.mkdir(mode=0o700)
+    checkpoint = stream / "checkpoint.md"
+    checkpoint.write_text(intent_text)
+    candidate = lanes[0] / "brief.md"
+    before = snapshot(work)
+    run(64, "--plan", intent_path=checkpoint, output_path=candidate)
+    check(snapshot(work) == before, "unignored plan output changed the fixture")
+    cases += 1
+    ignore = repo / ".gitignore"
+    ignored_text = "/.eyr-plans/\n/reviews/\n/sub/.eyr-plans/\n/plan.md\n"
+    ignore.write_text(ignored_text)
+    for lane in lanes:
+        candidate = lane / "brief.md"
+        before = snapshot(work)
+        text, _ = run(0, "--plan", intent_path=checkpoint, output_path=candidate,
+                      overrides={"GATE_MARKER": str(marker)})
+        check(snapshot(work, exclude=candidate) == before, "plan wrote anything beyond its exact ignored artifact")
+        check(stat.S_IMODE(candidate.stat().st_mode) == 0o600 and candidate.stat().st_nlink == 1,
+              "repository artifact is not a private single-link file")
+        check("worktree observation: not collected" in text and "tracked worktree SHA-256:" not in text
+              and "reuse: disabled" in text and "skipped by --plan (read-only)" in text
+              and "output creates a repository file" in text and not marker.exists(),
+              "repository plan output changed observation or gate scope")
+        check(git("check-ignore", "--", str(candidate)).strip() == os.fsencode(candidate)
+              and not git("ls-files", "--", str(candidate)), "plan output is not ignored and untracked")
+        accepted = subprocess.run([str(scanner), "outbound", "--root", str(repo), "--scratch-root", str(work),
+                                   "--", str(candidate)], input=b"Review.", stdout=subprocess.DEVNULL, env=env)
+        check(accepted.returncode == 0, "repository brief fails outbound artifact API")
+        before = snapshot(work)
+        run(64, "--plan", intent_path=checkpoint, output_path=candidate)
+        check(snapshot(work) == before, "existing repository plan artifact was clobbered")
+        candidate.unlink()
+        cases += 2
+
+    candidate = lanes[0] / "brief.md"
+    before = snapshot(work)
+    # Ordinary repository roots need no TMPDIR. Tool-session paths still require
+    # explicit caller scratch under the scanner's independent confinement policy.
+    tool_session = re.match(r"^/(?:var/)?tmp/(?:opencode|claude-[^/]+|codex[^/]*)/", str(repo.resolve()))
+    run(2 if tool_session else 0, "--plan", intent_path=checkpoint, output_path=candidate,
+        overrides={"TMPDIR": None})
+    check(snapshot(work, exclude=None if tool_session else candidate) == before,
+          "no-TMPDIR plan invocation changed unexpected fixture state")
+    if tool_session:
+        check(not candidate.exists(), "repository exception bypassed tool-session scratch confinement")
+    else:
+        candidate.unlink()
+    cases += 1
+
+    # A missing worktree leaf can still be tracked; --no-index ignore status
+    # alone must not authorize recreating it. Index writes here are fixture-only.
+    git("update-index", "--add", "--cacheinfo", "100644", git("rev-parse", "HEAD:a.txt").decode().strip(),
+        str(candidate.relative_to(repo)))
+    before = snapshot(work)
+    run(64, "--plan", intent_path=checkpoint, output_path=candidate)
+    check(snapshot(work) == before, "tracked ignored plan output changed source or Git metadata")
+    run(64, "--plan", intent_path=checkpoint, output_path=candidate,
+        overrides={"GIT_LITERAL_PATHSPECS": "1"})
+    check(snapshot(work) == before, "literal-pathspec environment recreated a tracked artifact")
+    alternate_index = work / "alternate.index"
+    subprocess.run(["git", "-C", str(repo), "read-tree", "--empty"],
+                   env={**env, "GIT_INDEX_FILE": str(alternate_index)}, check=True)
+    before = snapshot(work)
+    run(64, "--plan", intent_path=checkpoint, output_path=candidate,
+        overrides={"GIT_INDEX_FILE": str(alternate_index)})
+    check(snapshot(work) == before, "alternate index recreated a tracked artifact")
+    text, _ = run(0, "--plan", overrides={"GIT_INDEX_FILE": str(alternate_index)})
+    check("worktree observation: not collected" in text, "alternate-index scratch plan changed scope")
+    fresh()
+    check(snapshot(work) == before, "alternate-index scratch plan changed repository state")
+    alternate_index.unlink()
+    git("restore", "--staged", "--", str(candidate.relative_to(repo)))
+    cases += 4
+
+    for refused in (repo / "plan.md", repo / "checkpoint.md", repo / "reviews/brief.md",
+                    plans / "checkpoint.md", stream / "checkpoint.md", stream / "reviews/brief.md",
+                    stream / "auditor/brief.md",
+                    lanes[0] / "nested/brief.md", lanes[1] / "brief.txt", plans / "audit/brief.md",
+                    plans / "./spar/brief.md", plans / "../spar/brief.md",
+                    plans / "governance/audit/brief.md", plans / "governance/spar/brief.md",
+                    plans / "bad.slug/audit/brief.md", plans / "bad slug/spar/brief.md",
+                    plans / "-bad/spar/brief.md", repo / "sub/.eyr-plans/artifact-tests/audit/brief.md"):
+        before = snapshot(work)
+        run(64, "--plan", intent_path=checkpoint, output_path=refused)
+        check(snapshot(work) == before, "invalid repository namespace path changed fixture: " + str(refused))
+        cases += 1
+
+    for parent, mode in ((plans, 0o775), (plans, 0o757), (stream, 0o750), (stream, 0o770),
+                         (stream, 0o500), (lanes[0], 0o755), (lanes[0], 0o707), (lanes[0], 0o1700)):
+        original_mode = stat.S_IMODE(parent.stat().st_mode)
+        parent.chmod(mode)
+        before = snapshot(work)
+        run(2, "--plan", output_path=candidate)
+        check(snapshot(work) == before, "unsafe plan parent mode accepted or repaired")
+        parent.chmod(original_mode)
+        cases += 1
+
+    for parent in (plans, stream, lanes[0]):
+        held = work / "held-parent"
+        parent.rename(held)
+        before = snapshot(work)
+        run(2, "--plan", output_path=candidate)
+        check(snapshot(work) == before, "generator created missing plan directories")
+        parent.symlink_to(held, target_is_directory=True)
+        before = snapshot(work)
+        run(2, "--plan", output_path=candidate)
+        check(snapshot(work) == before, "plan output followed a parent escaping the namespace")
+        parent.unlink()
+        held.rename(parent)
+        cases += 2
+
+    # Alias spellings into the namespace are not an alternative entry point.
+    for alias_parent, target in ((repo / "review-alias", lanes[0]), (scratch / "review-alias", lanes[0]),
+                                 (scratch / "repo-alias", repo)):
+        alias_parent.symlink_to(target, target_is_directory=True)
+        aliased = alias_parent / candidate.relative_to(target)
+        before = snapshot(work)
+        run(64, "--plan", output_path=aliased)
+        check(snapshot(work) == before, "alias into the plan namespace accepted")
+        alias_parent.unlink()
+        cases += 1
+    lanes[0].rmdir()
+    lanes[0].symlink_to(lanes[1], target_is_directory=True)
+    before = snapshot(work)
+    run(2, "--plan", output_path=candidate)
+    check(snapshot(work) == before, "lane symlink into another lane accepted")
+    lanes[0].unlink()
+    lanes[0].mkdir(mode=0o700)
+    candidate.symlink_to(lanes[0] / "missing.md")
+    before = snapshot(work)
+    run(2, "--plan", output_path=candidate)
+    check(snapshot(work) == before, "dangling repository output link clobbered")
+    candidate.unlink()
+    cases += 2
+
+    # A bounded Git shim changes eligibility during metadata collection, after
+    # initial preflight. It never runs a gate or alters the real repository.
+    bin_dir = work / "recheck-bin"
+    bin_dir.mkdir(mode=0o700)
+    shim = bin_dir / "git"
+    for mutation, expected, diagnostic in (
+            (f"Path({str(ignore)!r}).write_text('# ignore removed during collection\\n')", 64, b"must already be ignored"),
+            (f"Path({str(lanes[0])!r}).chmod(0o755)", 2, b"directories must be real, owned and private")):
+        shim.write_text("#!/usr/bin/python3 -I\nimport os, sys\nfrom pathlib import Path\n"
+                        "if sys.argv[1:] == ['--no-pager', 'log', '-1', '--format=%H %s']:\n"
+                        f"    {mutation}\n"
+                        "os.execv('/usr/bin/git', ['git', *sys.argv[1:]])\n")
+        shim.chmod(0o700)
+        # Compare every fixture entry against the exact intentional shim effect.
+        if expected == 64:
+            ignore.write_text("# ignore removed during collection\n")
+        else:
+            lanes[0].chmod(0o755)
+        expected_state = snapshot(work)
+        ignore.write_text(ignored_text)
+        lanes[0].chmod(0o700)
+        _, result = run(expected, "--plan", output_path=candidate,
+                        overrides={"PATH": str(bin_dir) + os.pathsep + env["PATH"]})
+        check(diagnostic in result.stderr and snapshot(work) == expected_state,
+              "plan eligibility was not rechecked before publication, or refusal had side effects")
+        ignore.write_text(ignored_text)
+        lanes[0].chmod(0o700)
+        cases += 1
+
+    for bad_intent in (leak, near_limit):
+        before = snapshot(work)
+        run(2, "--plan", intent_path=bad_intent, output_path=candidate)
+        check(snapshot(work) == before, "scanner refusal wrote an ignored plan artifact or draft")
+        cases += 1
+    before = snapshot(work)
+    run(64, "--plan", "--gate", "forbidden", output_path=candidate, overrides={"GATE_MARKER": str(marker)})
+    check(snapshot(work) == before and not marker.exists(), "repository plan output enabled gates")
+    cases += 1
+    asset.unlink()
+    os.mkfifo(asset)
+    before = snapshot(work)
+    text, _ = run(0, "--plan", intent_path=checkpoint, output_path=candidate)
+    check(snapshot(work, exclude=candidate) == before and "worktree observation: not collected" in text,
+          "repository plan output opened source or changed state beyond its artifact")
+    candidate.unlink()
+    asset.unlink()
+    asset.write_bytes(bytes(range(256)) * 4096)
     cases += 1
 
     # A plan can observe metadata even with inherited sensitive source paths.

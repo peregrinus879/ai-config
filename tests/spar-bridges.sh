@@ -329,13 +329,18 @@ for bridge in "$PRODUCTION_CLAUDE" "$PRODUCTION_CODEX"; do
 done
 printf 'harmless\n' >"$repo/README.md"
 printf 'in-repo artifact\n' >"$repo/notes.md"
+printf '/.eyr-plans/\n' >"$repo/.gitignore"
 # Generator semantics live in review-brief.sh. Exercise the generated artifact's
 # handoff to both mocked reviewers in the ordinary review below, without gates.
-git -C "$repo" add README.md notes.md
+git -C "$repo" add README.md notes.md .gitignore
 git -C "$repo" -c user.name=Fixture -c user.email=fixture@example.invalid commit -qm 'bridge fixture'
 printf 'Outcome: review bridge fixture\nNon-goals: deployment\nConstraints: offline\nAcceptance: intact brief\n' >"$TMP/art/intent.md"
 /usr/bin/env -C "$repo" "$ROOT/agents/.agents/skills/spar/scripts/review-brief" \
   --intent "$TMP/art/intent.md" --out "$TMP/art/brief.md" --plan >"$TMP/brief.out"
+local_brief="$repo/.eyr-plans/bridge-fixture/spar/repo-brief.md"
+(umask 077; mkdir -p "${local_brief%/*}")
+/usr/bin/env -C "$repo" "$ROOT/agents/.agents/skills/spar/scripts/review-brief" \
+  --intent "$TMP/art/intent.md" --out "$local_brief" --plan >"$TMP/local-brief.out"
 mkdir -p "$repo/secrets"
 printf 'harmless\n' >"$repo/secrets/ordinary.md"
 run_bridge() { # bridge mode calls-file [bridge args...]
@@ -372,7 +377,7 @@ for bridge in "$CLAUDE_BRIDGE" "$CODEX_BRIDGE"; do
   git -C "$repo" config --unset spar.consent
 
   GIT_EDITOR=true OPENAI_BASE_URL=sentinel ANTHROPIC_BASE_URL=sentinel SPAR_TEST_CANARY=leak \
-    run_bridge "$bridge" ok "$calls" "Review ordinary material." "$TMP/art/spar-plan.md" "$repo/notes.md" "$TMP/art/brief.md"
+    run_bridge "$bridge" ok "$calls" "Review ordinary material." "$TMP/art/spar-plan.md" "$repo/notes.md" "$TMP/art/brief.md" "$local_brief"
   [[ $BRIDGE_RC == 0 && $(<"$calls.out") == 'review ok' ]] || fail "$name failed an ordinary review: $(<"$calls.err")"
   [[ $(<"$calls.err") == *'SPAR-BRIDGE ID: '* ]] || fail "$name did not report the reviewer id"
   [[ $(<"$calls.err") == *'"model":"unknown","effort":"unknown","tier":"unknown","clientversion":"'* ]] ||
@@ -382,6 +387,8 @@ for bridge in "$CLAUDE_BRIDGE" "$CODEX_BRIDGE"; do
     fail "$name did not send the scanned prompt with the inlined artifacts on stdin"
   [[ $(<"$calls.stdin") == *'===== artifact: brief.md ====='*"$(<"$TMP/art/brief.md")"*'===== end artifact: brief.md ====='* ]] ||
     fail "$name did not relay the complete generated brief with artifact delimiters"
+  [[ -f $local_brief && $(<"$calls.stdin") == *'===== artifact: repo-brief.md ====='*"$(<"$local_brief")"*'===== end artifact: repo-brief.md ====='* ]] ||
+    fail "$name lost the retained repository spar brief or omitted it from delivery"
   ! grep -qE '^(OPENAI_BASE_URL|ANTHROPIC_BASE_URL|SPAR_TEST_CANARY|GIT_EDITOR|TMPDIR)=' "$calls.env" ||
     fail "$name passed caller environment to the reviewer"
   grep -qE '^HOME=' "$calls.env" || fail "$name scrubbed HOME from the reviewer"

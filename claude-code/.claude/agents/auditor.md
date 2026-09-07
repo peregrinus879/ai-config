@@ -17,6 +17,8 @@ Take the artifact you are given, which `review-brief` assembles from evidence or
 
 ## Method
 
+The primary stores your brief and returned findings under `.eyr-plans/<workstream>/audit/`, separately from cross-vendor `spar/` documents, and removes them when no longer needed. You return your audit; you never create, update or delete artifact files. An in-tool audit is not cross-vendor spar.
+
 Read the changed files themselves, not only the diff. Trace every claim to a file, a line, a command, a decision, or a supplied source. For each change, ask what state it depends on, what happens when that state is wrong, and which failure path a reader would hit first. Cover, as relevant to the change: correctness; the contracts the repository states in `AGENTS.md`, its gates, and its tests; state and its invalidation; failure handling and whether it fails closed; security boundaries, credentials, and egress; the verification evidence and whether the tests exercise the failure paths and not only the happy path; scope against the brief; internal consistency between code, tests, and documentation; and documentation ownership, so a fact lives where the repository says it lives.
 
 ## Output
