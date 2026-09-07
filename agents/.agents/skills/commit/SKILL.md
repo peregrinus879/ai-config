@@ -38,7 +38,7 @@ Any change to content, message, audience, or scratch disposition after approval 
 
 ## Review cheat sheet
 
-Reference on request, not repeated in normal packets. Review from a separate terminal pane at the repository root, starting with `nvim .`:
+Reference on request, not repeated in normal packets. In a separate Neovim pane, open a file or select a Neo-tree item in the candidate's repository. The family Neovim configuration resolves the Git-review mappings from that context without a manual directory change; stock configurations may still require launching `nvim .` from the repository root. Review the staged changes, not merely the mixed working file:
 
 | Keys | Action |
 |---|---|
@@ -53,7 +53,7 @@ Reference on request, not repeated in normal packets. Review from a separate ter
 | `<Esc>` | close without opening |
 | avoid `<Tab>` and `<C-r>` | they stage and restore |
 
-Terminal fallback: `git diff --cached --stat`, `git diff --cached`, and `git diff --cached -- path/to/file`.
+Terminal fallback: `git -C "/path/to/candidate-repository" diff --cached --stat`, `git -C "/path/to/candidate-repository" diff --cached`, and `git -C "/path/to/candidate-repository" diff --cached -- path/to/file`. Replace the quoted repository path with the exact candidate root. These commands do not change the editor or shell cwd.
 
 ## Commit
 
