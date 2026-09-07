@@ -283,7 +283,7 @@ for rule in external_rules:
 require(edit_rules.get("../*") == "ask", "OpenCode edits outside a non-root worktree without asking")
 for subject in ("../../tmp/opencode/session/result.md", "../sibling/tmp/opencode/result.md"):
     require(evaluate("edit", subject, opencode["permission"]) == "ask", "OpenCode unsafe relative temp write exception reopened")
-for tree in ("scratch",):
+for tree in ("scratch", "quarry"):
     require(evaluate("edit", f"../{tree}/result.md", opencode["permission"]) == "ask", f"OpenCode {tree} location grant silently permits native edits")
     # Non-Git worktree '/' produces no ../ prefix; do not claim universal edit asks.
     require(evaluate("edit", f"fixture-home/Projects/{tree}/result.md", opencode["permission"]) == "allow", "OpenCode non-Git root-worktree edit behavior changed")
@@ -300,7 +300,7 @@ for label, rules in (("read", read_rules), ("edit", edit_rules), ("external_dire
     denies_come_last(rules, label)
 reference_trees = ("/usr", "/var/lib/pacman")
 require({path for path, action in external_rules.items() if action == "allow"} == {
-    "/tmp/opencode/*", "~/Projects/scratch/**", "~/.agents/skills/**", "/usr/**", "/var/lib/pacman/**",
+    "/tmp/opencode/*", "~/Projects/scratch/**", "~/Projects/quarry/**", "~/.agents/skills/**", "/usr/**", "/var/lib/pacman/**",
 }, "OpenCode external preapprovals differ from the reviewed location set")
 for tree in reference_trees:
     require(external_rules.get(f"{tree}/**") == "allow", f"OpenCode OS reference location is not preapproved: {tree}")
@@ -322,6 +322,12 @@ external_cases.update({
     "/fixture-home/Projects/scratch/session/deep/*": "allow",
     "/fixture-home/Projects/scratch-other/*": "ask",
     "/fixture-home/Projects/sibling/scratch/*": "ask",
+    "/fixture-home/Projects/quarry/*": "allow",
+    "/fixture-home/Projects/quarry/opencode/src/*": "allow",
+    "/fixture-home/Projects/quarry-other/*": "ask",
+    "/fixture-home/Projects/sibling/quarry/*": "ask",
+    "/fixture-home/Projects/quarry/opencode/.ssh/*": "deny",
+    "/fixture-home/Projects/quarry/opencode/.config/git/*": "deny",
     "/tmp/opencode/*": "allow",
     "/tmp/opencode/session/deep/*": "allow",
     "/tmp/opencode-other/*": "ask",
@@ -482,6 +488,21 @@ for skill, script in (("commit", "commit-candidate"), ("commit", "commit-apply")
     require(os.access(ROOT / "agents/.agents/skills" / skill / "scripts" / script, os.X_OK), f"skill script missing or not executable: {skill}/scripts/{script}")
 require(os.access(ROOT / "templates/hooks/commit-gate", os.X_OK), "templates/hooks/commit-gate is missing or not executable")
 
+# The sync workflow maintains role-appropriate references for all three tools.
+references = {}
+for line in (ROOT / "references.txt").read_text(encoding="utf-8").splitlines():
+    fields = line.split("#", 1)[0].split()
+    if not fields:
+        continue
+    require(len(fields) == 2, "reference manifest entry must name one directory and URL")
+    require(fields[0] not in references, "duplicate reference manifest entry")
+    references[fields[0]] = fields[1]
+require(references == {
+    "claude-code": "https://github.com/anthropics/claude-code.git",
+    "codex": "https://github.com/openai/codex.git",
+    "opencode": "https://github.com/anomalyco/opencode.git",
+}, "harness reference inventory differs from the reviewed three-tool set")
+
 # Skills stay portable: the name matches the directory and only standard frontmatter fields appear.
 STANDARD_SKILL_FIELDS = {"name", "description", "license", "compatibility", "metadata", "allowed-tools"}
 for skill_dir in sorted([*(ROOT / "agents/.agents/skills").iterdir(), *(ROOT / ".agents/skills").iterdir()]):
@@ -531,9 +552,9 @@ for prefix in ("", "copy/deep/"):
                                       "outbound", "--scratch-root", bridge_fixtures, "--", str(fixture)],
                                      input="Review synthetic fixture.", capture_output=True, text=True)
             require(scanned.returncode == (2 if denied else 0), f"scanner artifact corpus mismatch: {subject}")
-# Preapproved persistent scratch retains read/edit restrictions and copied-store
+# Preapproved project roots retain read/edit restrictions and copied-store
 # denies at the root and at depth. These are path strings, not secret IO.
-for tree in ("scratch",):
+for tree in ("scratch", "quarry"):
     for prefix in ("", "copy/deep/"):
         for name, denied in [(name, True) for name in corpus] + [(name, False) for name in safe_paths]:
             target = f"/fixture-home/Projects/{tree}/" + prefix + name
@@ -547,4 +568,4 @@ for tree in ("scratch",):
             if name in (store + "/ordinary.txt" for store in PROJECT_STORE_DIRECTORIES) or name == "secrets/ordinary.txt":
                 for permissions in (opencode["permission"], derived_agents["auditor"]["permission"]):
                     require(evaluate("external_directory", external, permissions) == "deny", f"OpenCode {tree} copied directory store reopened: {external}")
-print(f"ok: configuration authority boundaries ({2 * (len(corpus) + len(safe_paths))} path cases{', both bridge profiles' if bridge_fixtures else ''}; {len(external_cases)} external locations; {2 * (len(corpus) + len(safe_paths))} persistent-scratch paths)")
+print(f"ok: configuration authority boundaries ({2 * (len(corpus) + len(safe_paths))} path cases{', both bridge profiles' if bridge_fixtures else ''}; {len(external_cases)} external locations; {4 * (len(corpus) + len(safe_paths))} scratch/quarry paths)")

@@ -173,6 +173,7 @@
       "*": "ask",
       "/tmp/opencode/*": "allow",
       "~/Projects/scratch/**": "allow",
+      "~/Projects/quarry/**": "allow",
       "~/.agents/skills/**": "allow",
       "/usr/**": "allow",
       "/var/lib/pacman/**": "allow",

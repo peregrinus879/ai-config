@@ -22,7 +22,9 @@ Rules live at the lowest layer that can hold them. A sandbox constrains the surf
 
 ## One trust model, three enforcement points
 
-The three tools enforce the same intent to different depths. Claude Code combines deterministic rules with an auto-mode classifier; Codex has a filesystem/command-network sandbox, with explicitly retained web/app surfaces. OpenCode has lexical guardrails, not containment. Its external-directory grants are not read-only, so mutable external locations normally ask. Preapproved `/usr` and Pacman metadata avoid low-value interruptions for installed references, alongside the named scratch/skill exceptions. OS ownership protects many installed files, not every possible operation under those locations; native denies and the guidance still apply. Plan anticipated access before unattended work rather than choosing either blanket filesystem access or a prompt for every routine read. The permission plugins support the optional auditor and native scratch workflow, not arbitrary-shell containment.
+The [access matrices](access.md) make that distinction inspectable across tools: separate read/write rows, tool-call surfaces, implementation references, official semantics and the decisions behind deliberate differences. They are the comparison owner, not another source of permission grants. `/eyrsync` reconciles intent, matrix, implementation, upstream behavior and evidence together. Parity means equivalent authorized work and safety intent where enforceable, not weakening a stricter tool until the tables look identical.
+
+The three tools enforce the same intent to different depths. Claude Code combines deterministic rules with an auto-mode classifier; Codex has a filesystem/command-network sandbox, with explicitly retained web/app surfaces. OpenCode has lexical guardrails, not containment. Its external-directory grants are not read-only, so mutable external locations normally ask. Preapproved `/usr`, Pacman metadata and `~/Projects/quarry` avoid low-value interruptions for established references, alongside the named scratch/skill exceptions. Quarry also needs routine preservation-safe upstream refreshes for reference-dependent work; that explicit authorization is narrower than arbitrary source edits or remote reconfiguration and does not bypass Codex's sandbox. OS ownership protects many installed files, not every possible operation under those locations; native denies and the guidance still apply. Plan anticipated access before unattended work rather than choosing either blanket filesystem access or a prompt for every routine read. The permission plugins support the optional auditor and native scratch workflow, not arbitrary-shell containment.
 
 ## Read-only cross-vendor review
 
@@ -37,6 +39,12 @@ OpenCode's scratch plugin restores native edits under the real `/tmp/opencode` w
 ## One neutral source
 
 Guidance and skills live once, under `~/.agents`, the home of the Agent Skills format. Each tool's native global instruction file is a symlink to neutral `shared-guidance.md`: Claude Code's `CLAUDE.md`, Codex's `AGENTS.md`, and OpenCode's `~/.config/opencode/AGENTS.md`. OpenCode does not append the same guidance through explicit `instructions`; native global discovery avoids duplicate loading without disabling project `CLAUDE.md` fallback. Claude's project import remains. Skill executables stay in each skill's standard `scripts/` directory; tool-specific discovery adapters do not transfer ownership out of EyrAgents.
+
+## Reference coverage
+
+The same maintenance questions apply to every tool, but their evidence is not interchangeable. Codex and OpenCode publish client source; Claude Code's official public repository supplies versioned release/plugin/support material, not its proprietary CLI engine. Keeping all three declared references makes omissions and release changes visible without pretending equal implementation visibility. Version-matched source, official interface documentation, changelogs and controlled runtime observations answer different questions; disagreements remain explicit rather than being resolved by assumption. Hosted behavior and model internals are not proved by a client clone.
+
+The [eyrsync source table and lifecycle](../.agents/skills/eyrsync/SKILL.md#sources) own coverage and freshness. New references need a concrete dependency and approved destination; routine refreshes preserve shared work and refs. The sibling updater only creates its own missing entries, so EyrAgents bootstrap must be explicit. This uses the existing manifest/updater model instead of adding a second reference manager or cloning SDK ecosystems without a use case.
 
 ## The gate contract
 

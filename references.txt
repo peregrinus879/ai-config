@@ -1,7 +1,8 @@
-# Reference clones under ~/Projects/quarry that the maintenance ledger's source
-# checks read. One per line: <directory> <git URL>. The sibling repositories'
-# make refs updates existing family-listed clones and reports/keeps unlisted
-# clones. Missing entries are created only from the invoking sibling's own
-# manifest, so references needed here are declared here and bootstrapped
-# separately with explicit approval.
+# Official references used by eyrsync under ~/Projects/quarry.
+# One per line: <directory> <git URL>. Roles and evidence limits live in
+# .agents/skills/eyrsync/SKILL.md. The sibling updater refreshes existing family
+# references and reports/keeps unlisted clones. It creates missing entries only
+# from its own repository's manifest; eyrsync owns EyrAgents bootstrap preflight.
+claude-code https://github.com/anthropics/claude-code.git
+codex https://github.com/openai/codex.git
 opencode https://github.com/anomalyco/opencode.git

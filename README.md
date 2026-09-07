@@ -37,9 +37,15 @@ Omarchy + WSL deviations        → EyrWSL
 
 The siblings carry an `AGENTS.md` and one project skill each and otherwise rely on the guidance and skills deployed from here.
 
+## Reference Strategy
+
+[`references.txt`](references.txt) declares three official references under `~/Projects/quarry`: `claude-code` for public release/plugin/support material, and `codex` and `opencode` for client source and tests. Claude Code's public repository does not contain its proprietary CLI implementation. All three still need current official documentation, release notes and appropriately scoped runtime evidence; a source checkout alone does not prove installed behavior.
+
+[`/eyrsync`](.agents/skills/eyrsync/SKILL.md#sources) owns reference roles and evidence coverage, and starts by checking every managed tool rather than whichever clone already exists. Its [reference lifecycle](.agents/skills/eyrsync/SKILL.md#reference-lifecycle) distinguishes explicitly approved initial creation from routine preservation-safe refreshes. Sibling `make refs` refreshes existing declared family references but does not create missing EyrAgents-only entries. Missing references and conflicting evidence stay explicit until resolved; no clone is silently discarded or added merely for symmetry.
+
 ## Where Things Live
 
-[`AGENTS.md`](AGENTS.md) holds the repository invariants. The skills hold workflow procedure and the scripts hold the steps. [`docs/design.md`](docs/design.md) gives the reasons behind the shape. [`docs/maintenance.md`](docs/maintenance.md) holds active limitations, open decisions, deferred work, and revalidation triggers.
+[`AGENTS.md`](AGENTS.md) holds the repository invariants. The skills hold workflow procedure and the scripts hold the steps. [`docs/access.md`](docs/access.md) compares all three tools' read/write access, tool-call controls, rationale, implementation, and official sources. [`docs/design.md`](docs/design.md) gives the reasons behind the shape. [`docs/maintenance.md`](docs/maintenance.md) holds active limitations, open decisions, deferred work, and revalidation triggers.
 
 ## Layout
 
@@ -73,9 +79,10 @@ eyragents/
 ├── .agents/skills/eyrsync/SKILL.md       # this repository's own skill, with a .claude symlink; Codex and OpenCode read .agents natively
 ├── templates/codex/config.toml           # portable Codex profile, installed host-locally by make stow
 ├── templates/hooks/commit-gate           # the commit gate, installed as a real file at ~/.agents/hooks by make stow
-├── references.txt                        # reference clone the ledger's source checks read; the siblings' make refs keeps it
+├── references.txt                        # official source/release references, with roles and lifecycle owned by eyrsync
 ├── scripts/                              # link cleanup and Codex config reconciliation
 ├── tests/                                # configuration, bridge, statusline, and preparation checks
+├── docs/access.md                        # three-tool access matrices, decisions, implementation, and sources
 ├── docs/design.md                        # why the harness is shaped this way
 ├── docs/maintenance.md                   # active maintenance ledger
 ├── .github/workflows/test.yml            # CI: make lint and make check
@@ -87,6 +94,8 @@ eyragents/
 
 Trusted-repository work is autonomous until the commit boundary: a clear implementation request authorizes edits and the repository's gates, every commit requires approval of one exact staged candidate, and the user performs pushes manually after the `publish` skill reviews the delta; the same skill verifies the push and the published state afterwards.
 
+Start with the [three-tool access matrices](docs/access.md): separate read/write rows for workspace, home, system and temporary directories, followed by tool calls, consequential actions, and parity decisions. They distinguish authorization, configured capability, and verified behavior rather than treating a location grant as read-only or a classifier decision as a human prompt.
+
 Shared guidance authorizes non-secret reads under `~/Projects`, `/tmp`, `/var/tmp`, `/usr`, `/etc`, `/opt`, `/sys`, and `/var/lib/pacman`, excluding other tools' session roots. It does not promise prompt-free or technically read-only access everywhere. Claude Code uses native rules and auto-mode review without a tracked sandbox; Codex restricts local execution with a root-denied filesystem/command-network sandbox and reviews eligible boundary crossings; OpenCode uses lexical/path guardrails, not OS containment. Credential and edit boundaries still apply where those mechanisms have gaps. Prefer narrow, one-time approvals over persistent broad grants; no global auto-approval is needed.
 
 This repository is itself live configuration on a stowed host: an edit here is active for the next session of the tool it belongs to before anything is committed. Work on it only in a session you are watching.
@@ -94,6 +103,8 @@ This repository is itself live configuration on a stowed host: an edit here is a
 User-directed reads of relevant non-secret external context use each tool's native permission mechanism; a directory the user names may be granted, broad or unnamed grants may not.
 
 Before long or unattended work, the atomic plan also identifies work/reference/scratch roots and approval-sensitive operations. Resolve predictable access needs while H is present, rather than repeatedly interrupting authorized routine work. Unexpected access needs remain blockers, not permission to bypass a gate or enlarge permanent grants; independent authorized work can continue where possible. Commit and publication remain deliberate human boundaries.
+
+`~/Projects/quarry` is the shared reference-clone root used by H and the sync skills, not an incidental external directory. OpenCode preapproves its location alongside `~/Projects/scratch`; Claude Code and Codex already read it through their Projects grants. Shared guidance authorizes needed routine fetch/fast-forward refreshes of existing declared quarry clones, with preservation and native permission checks. The [access matrix](docs/access.md#workspace-and-home) distinguishes that workflow from arbitrary writes and Codex's network/write restriction; `/eyrsync` owns the refresh preflight.
 
 The `spar` workflow uses subscription-authenticated, read-only cross-vendor reviewers without web or command-network access. A reviewer may receive readable repository files, including private-repository files, except for Git internals and credential-shaped paths; a repository that must not reach the other vendor opts out with `git config spar.consent false`. An unset setting permits review; only literal `true` permits it when set, and empty values or lookup errors refuse. OpenCode's in-tool auditor permits only read/glob and denies unknown tools; grep is blocked because upstream does not apply per-file read policies to its results.
 
@@ -166,7 +177,7 @@ The configured primary OpenCode model defaults to `xhigh`. In `/variants`, `Defa
 - `commit` runs the repository's gates and presents an exact candidate and its gate evidence for approval. `commit-candidate -- PATH...` records the prepared index without staging; explicit `--stage` stages whole literal intended paths and refuses partially staged mixed files before staging anything. Its immutable `candidate-id` identifies the tree, parent, branch, message, and identity; `commit-apply ID` requires that exact approved ID. `commit-candidate --show ID` displays it; `--clear ID` rejects it without restoring the index or worktree. Apply uses an isolated index with normal hooks and checks the actual commit. Rejection compensates only by a safe compare-and-swap of that invocation's uniquely identified commit; otherwise it preserves state and stops for H, never resets an unexplained tip.
 - `publish` uses `publish-bind` to record an immutable `binding-id` covering the reviewed commit, tracking baseline, resolved push endpoint, branch, and relevant configuration. It scans every new commit's raw metadata, explicit per-parent merge patches, the flat diff, and complete newly reachable blobs and tree paths, including transient content removed before the tip. Its H-run command preserves `publish-bind --check ID` immediately before the explicit one-branch push, with an exact-base lease and no incidental tags or submodule pushes. `publish-verify ID` observes the bound push endpoint through read-only `ls-remote`; local tracking is reported separately, CI remains a separate check, and `verify-published` runs only where defined. Remote equality is a point-in-time observation, not proof of who pushed.
 - `spar` runs an optional read-only cross-model review of a plan, diff, or decision: `review-brief` assembles the artifact from the intent, the repository state, the gate results as run, and the change, and `~/.agents/skills/spar/scripts/spar-<reviewer> review "<request>" <artifact>...` from the repository. Claude Code reviews with `spar-codex`, OpenCode with `spar-claude`, and a Codex session hands the request to the user because its profile cannot launch the bridge. Consult the maintenance ledger for active bridge availability.
-- `eyrsync`, this repository's own skill, syncs the harness against the tools' official documentation and changelogs and the Agent Skills specification, and the sibling repositories against the harness where they depend on it; run it when a tool changes an interface or moves to a new major version, or when the harness changes something a sibling depends on.
+- `eyrsync`, this repository's own skill, starts with reference/evidence coverage for all three tools, then reconciles the harness against current official documentation, releases, available version-matched source and runtime evidence. Its access pass connects matrix cells to decisions and implementation; its sibling pass checks shared contracts. Run it for relevant interface changes, any managed tool's breaking release, missing references or conflicting evidence, or periodically. The Agent Skills specification remains the shared format reference.
 
 Receipts do not attest approval or gates: checks against a worktree do not attest a different staged tree, and untracked files need separate classification. Candidate and binding IDs coexist; there is no implicit latest-record apply/verify. Drift requires a new receipt and review. Binary/non-UTF-8/oversized or otherwise unscannable objects produce a partial scan with bound IDs, sizes, reasons and historical tree/path locations; H inspects those exact objects before approval or publication. Normal pre-push hooks remain enabled, with their effective targets/content digests bound for review. Actual sensitive/identity findings, unsafe hook sources, first publication without a tracking baseline, configured push options, and unsupported helpers still refuse; manual inspection is not a bypass for these. See the skills for the procedure and the ledger for active limits.
 
