@@ -2,6 +2,12 @@
 
 `AGENTS.md` states the invariants. This note gives the reasons, so a reader can judge whether the same shape fits their own setup.
 
+## Intent-led collaboration
+
+H supplies direction, not an exhaustive specification. Shared guidance's [Approach](../agents/.agents/shared-guidance.md#approach) makes broader reasoning an explicit step before choosing a solution: frame the goal and surrounding system, check missing counterparts and assumptions, and consider alternatives and downstream effects. Interpolation fills reasonable gaps; extrapolation tests related cases. The first example or existing configuration is evidence, not the boundary of the problem. This applies across all work, not only access planning or source references.
+
+Broad reasoning does not authorize broad action. Surface useful omissions and material tradeoffs for H, while well-supported low-risk work proceeds within scope. Likewise, a command that relieves one symptom is not a durable fix when the workflow will require it repeatedly; explain that distinction and the underlying remedy. Keep the analysis proportionate rather than adding a mandatory essay or another approval ritual to trivial work.
+
 ## Two interventions
 
 The normal trusted-repository workflow has two human boundaries: approving one exact staged candidate, and running the reviewed push command. Ordinary edits remain autonomous; ambiguous, destructive, or unsupported operations still stop for H. A request spanning repositories presents their push commands together without merging repository ownership.

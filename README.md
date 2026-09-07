@@ -4,7 +4,7 @@ One policy, one workflow, three coding agents. EyrAgents is a personal harness t
 
 ## What You Get
 
-- **Shared guidance.** One markdown policy that every tool loads at session start: how to work, what needs approval, and what never happens without an explicit instruction. It lives once under `~/.agents`, and each tool reads it through its own mechanism.
+- **Shared guidance.** One markdown policy that every tool loads at session start. Its [Approach](agents/.agents/shared-guidance.md#approach) starts from H's goal and the surrounding system, checks missing counterparts and alternatives, and clarifies material uncertainty rather than treating the first example or existing file as the whole problem. It distinguishes broad reasoning from authorized action and recurring workarounds from durable results. It lives once under `~/.agents`, and each tool reads it through its own mechanism.
 - **Two interventions per change.** The `commit` skill runs the repository's gates and asks for approval of one exact staged candidate; the `publish` skill reviews what a push would expose, hands over the push command, and verifies the result afterwards. Everything in between is automatic.
 - **Skills in the open format.** The workflows are [Agent Skills](https://agentskills.io) `SKILL.md` files with their executables in `scripts/`, written once under `~/.agents`; Codex and OpenCode read them there, and Claude Code through symlinks until it reads the standard's home itself.
 - **A safety posture per tool.** Deterministic denies plus an auto-mode classifier for Claude Code, a root-denied sandbox for Codex, and guardrail rules for OpenCode, all aligned on one list of credential stores and Git internals.
