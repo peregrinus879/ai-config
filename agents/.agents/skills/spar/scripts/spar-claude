@@ -119,7 +119,7 @@ settings=$(jq -cn --arg repo "$repo" --arg home "$account_home" '
     env: {ANTHROPIC_DEFAULT_FABLE_MODEL: ""},
     permissions: {
       allow: ["Read(/" + $repo + "/**)"],
-      deny: [
+      deny: ([
         "Write", "Edit", "NotebookEdit", "Bash", "WebFetch", "WebSearch", "Task",
         "Read(./.git)", "Read(./.git/**)", "Read(./**/.git)", "Read(./**/.git/**)",
         "Read(./.env)", "Read(./.env.*)", "Read(./**/.env)", "Read(./**/.env.*)",
@@ -148,7 +148,7 @@ settings=$(jq -cn --arg repo "$repo" --arg home "$account_home" '
         map(. as $store | ["./", "./**/"] | map("Read(" + . + $store + ")", "Read(" + . + $store + "/**)")) | flatten) +
         ([".claude/.credentials.json", ".codex/auth.json", ".config/gh/hosts.yml", ".docker/config.json", ".local/share/opencode/auth.json", ".bash_history", ".zsh_history",
           "*.key", "*.pem", "*.p12", "*.pfx", "credentials", "credentials.*", "auth.json", ".netrc", ".npmrc", ".pypirc", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"] |
-        map(. as $store | ["./", "./**/"] | map("Read(" + . + $store + ")")) | flatten)
+        map(. as $store | ["./", "./**/"] | map("Read(" + . + $store + ")")) | flatten))
     }
   }
 ') || abort "cannot build isolated Claude settings"

@@ -373,7 +373,7 @@ for bridge in "$CLAUDE_BRIDGE" "$CODEX_BRIDGE"; do
   rm -- "$SHIMS/consent-error"
   git -C "$repo" config spar.consent true
   run_bridge "$bridge" ok "$calls" "Review with explicit consent."
-  [[ $BRIDGE_RC == 0 ]] || fail "$name refused explicit consent"
+  [[ $BRIDGE_RC == 0 ]] || fail "$name failed with explicit consent (rc=$BRIDGE_RC): $(<"$calls.err")"
   git -C "$repo" config --unset spar.consent
 
   GIT_EDITOR=true OPENAI_BASE_URL=sentinel ANTHROPIC_BASE_URL=sentinel SPAR_TEST_CANARY=leak \
