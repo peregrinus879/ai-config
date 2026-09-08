@@ -8,28 +8,35 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
+env:
+  LANG: C.UTF-8
+  LC_ALL: C.UTF-8
+  HISTFILE: /dev/null
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    container:
+      image: archlinux:base
+      options: --init
     steps:
+      - name: Prepare Arch userspace
+        run: |
+          pacman -Syu --noconfirm --needed git make stow jq python nodejs shellcheck util-linux diffutils
+          useradd --create-home --user-group --uid 1000 --shell /bin/bash ci
+          install -d -o ci -g ci -m 700 /tmp/eyr-ci
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '24'
-          package-manager-cache: false
-      - name: Install prerequisites
+      - name: Run unprivileged checks
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends curl git stow jq python3 util-linux xz-utils
-      - name: Install pinned ShellCheck
-        run: |
-          curl -fsSL -o "$RUNNER_TEMP/shellcheck.tar.xz" \
-            https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz
-          printf '%s  %s\n' '8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198' "$RUNNER_TEMP/shellcheck.tar.xz" | sha256sum --check
-          tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP" shellcheck-v0.11.0/shellcheck
-          "$RUNNER_TEMP/shellcheck-v0.11.0/shellcheck" --version
-          echo "$RUNNER_TEMP/shellcheck-v0.11.0" >> "$GITHUB_PATH"
-      - run: make lint
-      - run: make check
+          chown --recursive --no-dereference ci:ci "$GITHUB_WORKSPACE"
+          runuser -u ci -- env HOME=/home/ci TMPDIR=/tmp/eyr-ci TMUX_TMPDIR=/tmp/eyr-ci \
+            bash -euo pipefail <<'CHECK_REPO'
+          test "$(id -u)" -ne 0
+          make lint check
+          CHECK_REPO
