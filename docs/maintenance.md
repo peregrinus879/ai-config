@@ -59,6 +59,8 @@ Owner: EyrAgents for verification policy and evidence; the applicable host repos
 
 ## Deferred Work
 
+- Narrow watch (2026-09-08): [mise, yadm, chezmoi, DotState, Dotbot, Mackup and rcm](https://jdx.dev/posts/2026-09-07-dotfiles-that-save-themselves/) versus our Stow/reviewed-Git workflow; revisit for material recovery/safety improvements. No adoption approved.
+- Future enhancement (2026-09-08): shared, reproducible test images for local and hosted checks of exact staged candidates; revisit if environment-driven CI failures recur. Container access and image infrastructure require separate approval.
 - SSH verifier authentication/access remains deferred; review the [warnings and alternatives](#ssh-verifier-access) before any setup or verifier redesign.
 - Workstream-artifact WSL pass: after pulling and verifying the intended EyrAgents deployment, create an owned ignored `.eyr-plans/<workstream>/` with private `audit/` and `spar/` directories. Confirm `review-brief --plan` can create a new Markdown brief in each, without source/index/ignore changes or gates; check both reviewer paths remain read-only. Verify native tool restrictions rather than assuming the metadata exception overrides them. Remove only the no-longer-needed test artifacts and empty directories, leaving user files and governance records intact. Revalidate after generator, tool permission, filesystem or lifecycle changes; remove this item after actual-host verification.
 - Complete the [WSL host pass](#wsl-host-pass) on the actual host; its single procedure owns deployment, governance, OpenCode and behavioral checks without closing the other deferred items below.
