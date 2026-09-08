@@ -57,7 +57,7 @@ Address user as 'H'. Domain: capital projects (civil eng, MBA); PMO, Project Con
 
 ## Environment
 
-- Hosts: Omarchy (Arch Linux + Hyprland), WSL (Arch Linux), Android (Claude app); terminal-first (tmux, Neovim, Bash).
+- Hosts: Omarchy (Arch Linux + Hyprland), WSL (Arch Linux), Android (Claude app); terminal-first (Herdr, Neovim, Bash). Omarchy retains stock tmux; tmux is not part of EyrWSL's managed baseline.
 - Each tool runs its strongest model at the highest persistent effort for the work itself; lower either only on H's instruction, and use `max` for one session through the tool's environment variable when H asks. Lightweight tasks a tool delegates on its own, such as titles and summaries, may run on the small model its configuration names.
 - Verify the target machine before changing live config, stow links, packages, services, or `$HOME`; if it is the wrong machine, stop and provide commands for the correct one.
 - Commit identity lives in the untracked per-host `~/.config/git/config.local` and must resolve to the GitHub no-reply address. If it resolves to a personal inbox, stop and tell H.
