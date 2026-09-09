@@ -2,6 +2,7 @@
 
 import hashlib
 import contextlib
+import fcntl
 import io
 import json
 import os
@@ -10,6 +11,7 @@ import re
 import runpy
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -37,7 +39,7 @@ class Governance(unittest.TestCase):
                     "TMPDIR": str(self.root), "GIT_CONFIG_GLOBAL": str(self.root / "gitconfig"),
                     "GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C",
                     "GIT_AUTHOR_DATE": "2026-01-01T00:00:00Z", "GIT_COMMITTER_DATE": "2026-01-01T00:00:00Z",
-                    "EYRAGENTS_RECORD_ROOT": str(self.root / "records")}
+                    "EYRAGENTS_RECORD_ROOT": str(self.root / "records"), "HISTFILE": "/dev/null"}
         self.git("init", "-q", "-b", "main")
         self.git("config", "user.name", "Test")
         self.git("config", "user.email", "1+test@users.noreply.github.com")
@@ -106,6 +108,690 @@ class Governance(unittest.TestCase):
         receipt_id = re.search(r"^binding-id=([a-f0-9]{64})$", result.stdout, re.M)[1]
         command = result.stdout.split("== command\n", 1)[1].strip()
         return receipt_id, command
+
+    def close_bundle(self, verified=True):
+        self.outbound()
+        candidate_id = next(path.stem for path in (self.root / "records").glob("*/*.json")
+                            if json.loads(path.read_text())["kind"] == "candidate")
+        publication_id, command = self.binding()
+        if verified:
+            self.run_command(["bash", "--noprofile", "--norc", "-c", command])
+            self.script("publish-verify", publication_id)
+        return candidate_id, publication_id
+
+    def set_status(self, receipt_id, state, **extra):
+        self.receipt(receipt_id).with_suffix(".status").write_text(
+            json.dumps({"id": receipt_id, "state": state, **extra}))
+
+    def snapshot(self, root):
+        result = {}
+        for path in [root, *sorted(root.rglob("*"))]:
+            info = path.lstat()
+            data = os.readlink(path) if stat.S_ISLNK(info.st_mode) else path.read_bytes() if stat.S_ISREG(info.st_mode) else None
+            result[str(path.relative_to(root))] = (
+                info.st_mode, info.st_uid, info.st_nlink, info.st_ino, info.st_mtime_ns, info.st_ctime_ns, data)
+        return result
+
+    def interrupt_close(self, ids, phase, target, *flags):
+        runner = '''import os, runpy, stat, sys
+runtime = runpy.run_path(sys.argv[1])
+phase, target = sys.argv[2:4]
+original_atomic = runtime["atomic"]
+original_unlink = runtime["Path"].unlink
+original_open, original_fdopen = os.open, os.fdopen
+original_fsync, original_replace = os.fsync, os.replace
+active = False
+def atomic(path, *args, **kwargs):
+    global active
+    active = path.name == target + ".status"
+    original_atomic(path, *args, **kwargs)
+    if phase == "mark" and active:
+        os._exit(91)
+    active = False
+def open_file(path, flags, *args, **kwargs):
+    fd = original_open(path, flags, *args, **kwargs)
+    if active and phase == "create" and flags & os.O_CREAT:
+        os._exit(91)
+    return fd
+class Writer:
+    def __init__(self, stream):
+        self.stream = stream
+    def __enter__(self):
+        return self
+    def __exit__(self, *args):
+        return self.stream.__exit__(*args)
+    def __getattr__(self, name):
+        return getattr(self.stream, name)
+    def write(self, data):
+        if active and phase in ("partial-write", "write"):
+            self.stream.write(data[:len(data) // 2] if phase == "partial-write" else data)
+            self.stream.flush()
+            os._exit(91)
+        return self.stream.write(data)
+def fdopen(*args, **kwargs):
+    stream = original_fdopen(*args, **kwargs)
+    return Writer(stream) if active and "w" in args[1] else stream
+def fsync(fd):
+    original_fsync(fd)
+    if active and phase == "fsync" and stat.S_ISREG(os.fstat(fd).st_mode):
+        os._exit(91)
+def replace(source, destination):
+    if active and phase == "before-replace":
+        os._exit(91)
+    original_replace(source, destination)
+    if active and phase == "replace":
+        os._exit(91)
+def unlink(path, *args, **kwargs):
+    original_unlink(path, *args, **kwargs)
+    if path.name == target + "." + phase:
+        os._exit(91)
+runtime["Records"].close.__globals__["atomic"] = atomic
+runtime["Path"].unlink = unlink
+os.open, os.fdopen, os.fsync, os.replace = open_file, fdopen, fsync, replace
+sys.argv = [sys.argv[1], "candidate", "--close", *sys.argv[4:]]
+sys.exit(runtime["main"]())
+'''
+        result = self.run_command([sys.executable, "-I", "-c", runner,
+                                   str(SKILLS / "commit/scripts/governance.py"), phase, target, *ids, *flags], ok=False)
+        self.assertEqual(result.returncode, 91, result.stdout + result.stderr)
+
+    def test_close_verified_ancestry_bundle_and_preview_preserve_git_and_lock(self):
+        self.outbound()
+        first = next((self.root / "records").glob("*/*.json")).stem
+        self.write("next.txt", "next\n")
+        second = self.record("next.txt")
+        self.script("commit-apply", second)
+        publication, command = self.binding()
+        self.run_command(["bash", "-c", command])
+        self.script("publish-verify", publication)
+        self.write("pending.txt", "keep active candidate\n")
+        ready = self.record("pending.txt")
+        store = self.receipt(first).parent
+        before_store = self.snapshot(store)
+        before_git = self.snapshot(self.repo)
+        lock = (store / "lock").stat()
+        ids = (first, publication, second)
+        result = self.script("commit-candidate", "--close", *ids, "--dry-run")
+        self.assertEqual(result.stdout.count("outcome=verified"), 3)
+        self.assertEqual(before_store, self.snapshot(store))
+        self.assertEqual(before_git, self.snapshot(self.repo))
+        result = self.script("commit-candidate", "--close", *ids)
+        self.assertEqual(result.stdout.count("outcome=verified"), 3)
+        self.assertEqual(before_git, self.snapshot(self.repo))
+        self.assertEqual(self.status(ready)["state"], "ready")
+        self.assertEqual(sorted(path.name for path in store.iterdir()), [ready + ".json", ready + ".status", "lock"])
+        self.assertEqual((lock.st_dev, lock.st_ino), ((store / "lock").stat().st_dev, (store / "lock").stat().st_ino))
+        result = self.script("commit-candidate", "--close", *ids)
+        self.assertEqual(result.stdout.count("absent:"), 3)
+        self.assertNotIn("outcome=verified", result.stdout)
+
+    def test_close_requires_selected_publication_of_actual_committed_id(self):
+        candidate, publication = self.close_bundle()
+        store = self.receipt(candidate).parent
+        before = self.snapshot(store)
+        self.assertIn("coverage", self.script("commit-candidate", "--close", candidate, ok=False).stderr)
+        self.assertEqual(before, self.snapshot(store))
+        self.write("later.txt", "not published\n")
+        later = self.record("later.txt")
+        self.script("commit-apply", later)
+        before = self.snapshot(store)
+        for flags in ([], ["--accept-unverified"]):
+            result = self.script("commit-candidate", "--close", publication, later, *flags, ok=False)
+            self.assertIn("ancestry coverage", result.stderr)
+            self.assertEqual(before, self.snapshot(store))
+
+    def test_close_unverified_is_explicit_and_never_claims_success(self):
+        candidate, publication = self.close_bundle(verified=False)
+        store = self.receipt(candidate).parent
+        before = self.snapshot(store)
+        before_git = self.snapshot(self.repo)
+        before_remote = self.snapshot(self.root / "remote.git")
+        self.script("commit-candidate", "--close", publication, candidate, ok=False)
+        self.assertEqual(before, self.snapshot(store))
+        result = self.script("commit-candidate", "--close", publication, candidate, "--accept-unverified", "--dry-run")
+        self.assertEqual(result.stdout.count("outcome=UNVERIFIED"), 2)
+        self.assertEqual(before, self.snapshot(store))
+        result = self.script("commit-candidate", "--close", publication, candidate, "--accept-unverified")
+        self.assertEqual(result.stdout.count("outcome=UNVERIFIED"), 2)
+        self.assertNotIn("outcome=verified", result.stdout)
+        self.assertNotIn("publish verified", result.stdout)
+        self.assertNotIn("successful", result.stdout)
+        self.assertEqual(before_git, self.snapshot(self.repo))
+        self.assertEqual(before_remote, self.snapshot(self.root / "remote.git"))
+
+    def test_close_rejected_publication_requires_acceptance_to_cover_candidate(self):
+        candidate, publication = self.close_bundle(verified=False)
+        self.git("config", "push.followTags", "true")
+        self.script("publish-bind", "--check", publication, ok=False)
+        before = self.snapshot(self.receipt(candidate).parent)
+        self.script("commit-candidate", "--close", publication, candidate, ok=False)
+        self.assertEqual(before, self.snapshot(self.receipt(candidate).parent))
+        preview = self.script("commit-candidate", "--close", publication, "--dry-run")
+        self.assertIn("outcome=rejected", preview.stdout)
+        self.assertNotIn("outcome=verified", preview.stdout)
+        result = self.script("commit-candidate", "--close", publication, candidate, "--accept-unverified")
+        self.assertEqual(result.stdout.count("outcome=UNVERIFIED"), 2)
+
+    def test_close_plain_rejected_publication_and_unselected_corrupt_records(self):
+        candidate, publication = self.close_bundle(verified=False)
+        self.set_status(publication, "rejected")
+        store = self.receipt(candidate).parent
+        orphan = store / ("f" * 64 + ".json")
+        orphan.write_text("unexplained fixture payload")
+        orphan.chmod(0o400)
+        before_candidate = self.receipt(candidate).read_bytes()
+        result = self.script("commit-candidate", "--close", publication)
+        self.assertIn("outcome=rejected", result.stdout)
+        self.assertNotIn("outcome=verified", result.stdout)
+        self.assertEqual(self.receipt(candidate).read_bytes(), before_candidate)
+        self.assertEqual(self.status(candidate)["state"], "committed")
+        self.assertEqual(orphan.read_text(), "unexplained fixture payload")
+
+    def test_close_verified_commit_mismatch_and_missing_ancestry_objects_refuse(self):
+        candidate, publication = self.close_bundle()
+        self.set_status(publication, "verified", commit=self.parent)
+        store = self.receipt(candidate).parent
+        before = self.snapshot(store)
+        result = self.script("commit-candidate", "--close", candidate, publication, "--accept-unverified", ok=False)
+        self.assertIn("verified status/reviewed commit mismatch", result.stderr)
+        self.assertEqual(before, self.snapshot(store))
+        reviewed = json.loads(self.receipt(publication).read_text())["reviewed"]
+        self.set_status(publication, "verified", commit=reviewed)
+        self.set_status(candidate, "committed", commit="f" * 40)
+        before = self.snapshot(store)
+        self.script("commit-candidate", "--close", candidate, publication, ok=False)
+        self.assertEqual(before, self.snapshot(store))
+
+    def test_close_existing_published_wrong_commit_does_not_cover_unpublished_candidate(self):
+        candidate, publication = self.close_bundle()
+        published = self.status(candidate)["commit"]
+        self.write("unpublished.txt", "not published\n")
+        unpublished = self.record("unpublished.txt")
+        self.script("commit-apply", unpublished)
+        self.set_status(unpublished, "committed", commit=published)
+        store = self.receipt(candidate).parent
+        before_store, before_git = self.snapshot(store), self.snapshot(self.repo)
+        for flags in ([], ["--dry-run"], ["--accept-unverified"]):
+            result = self.script("commit-candidate", "--close", publication, unpublished, *flags, ok=False)
+            self.assertIn("committed candidate mismatch", result.stderr)
+            self.assertEqual(before_store, self.snapshot(store))
+            self.assertEqual(before_git, self.snapshot(self.repo))
+
+    def test_close_revalidates_each_immutable_commit_field_initially_and_on_recovery(self):
+        candidate, publication = self.close_bundle()
+        path = self.receipt(candidate)
+        value = json.loads(path.read_text())
+        original_source = self.status(candidate)
+        self.interrupt_close((publication, candidate), "mark", candidate)
+        original_marker = self.status(candidate)
+        seed_tree = self.git("rev-parse", self.parent + "^{tree}").stdout.strip()
+        changes = [{"tree": seed_tree}, {"parent": original_source["commit"]},
+                   {"message": value["message"] + "extra line\n"},
+                   {"identity": {**value["identity"], "author": ["Other", value["identity"]["author"][1]]}},
+                   {"identity": {**value["identity"], "committer": ["Other", value["identity"]["committer"][1]]}},
+                   {"identity": {}}, {"identity": {"author": value["identity"]["author"]}}]
+        for change in changes:
+            payload = json.dumps({**value, **change}, sort_keys=True, separators=(",", ":")) + "\n"
+            receipt_id = hashlib.sha256(payload.encode()).hexdigest()
+            other = path.with_name(receipt_id + ".json")
+            other.write_text(payload)
+            other.chmod(0o400)
+            source = {**original_source, "id": receipt_id}
+            marker = {**original_marker, "id": receipt_id, "payload": payload, "source": source}
+            for state in (source, marker):
+                other.with_suffix(".status").write_text(json.dumps(state))
+                other.with_suffix(".status").chmod(0o600)
+                for flags in ([], ["--dry-run"], ["--accept-unverified"]):
+                    with self.subTest(change=next(iter(change)), state=state["state"], flags=flags):
+                        before_store, before_git = self.snapshot(path.parent), self.snapshot(self.repo)
+                        result = self.script("commit-candidate", "--close", publication, receipt_id, *flags, ok=False)
+                        self.assertIn("committed candidate mismatch", result.stderr)
+                        self.assertEqual(before_store, self.snapshot(path.parent))
+                        self.assertEqual(before_git, self.snapshot(self.repo))
+            other.unlink()
+            before = self.snapshot(path.parent)
+            result = self.script("commit-candidate", "--close", receipt_id, ok=False)
+            self.assertIn("committed candidate mismatch", result.stderr)
+            self.assertEqual(before, self.snapshot(path.parent))
+
+    def test_close_checks_complete_actual_parent_list_and_both_identities(self):
+        candidate, publication = self.close_bundle()
+        path = self.receipt(candidate)
+        value = json.loads(path.read_text())
+        raw = self.git("cat-file", "commit", self.status(candidate)["commit"]).stdout.encode()
+        runtime = runpy.run_path(str(SKILLS / "commit/scripts/governance.py"))
+        self.assertTrue(runtime["candidate_commit"](value, raw)[1])
+        parent = b"parent " + value["parent"].encode() + b"\n"
+        for changed in (raw.replace(parent, b""), raw.replace(parent, parent * 2),
+                        raw.replace(b"author Test", b"author Other"), raw.replace(b"committer Test", b"committer Other"),
+                        raw.replace(b"author Test <1+test", b"author Test <2+other"),
+                        raw.replace(b"committer Test <1+test", b"committer Test <2+other")):
+            self.assertFalse(runtime["candidate_commit"](value, changed)[1])
+        self.interrupt_close((publication, candidate), "json", candidate)
+        # A historical receipt is not bound to today's checkout or Git identity.
+        self.git("checkout", "-q", "--detach", self.parent)
+        self.git("config", "user.name", "Current User")
+        self.git("config", "user.email", "2+current@users.noreply.github.com")
+        before = self.snapshot(self.repo)
+        self.script("commit-candidate", "--close", candidate, publication)
+        self.assertEqual(before, self.snapshot(self.repo))
+
+    def test_close_ancestry_queries_disable_lazy_fetch_and_git_writes(self):
+        candidate, publication = self.close_bundle()
+        env = self.git_shim('case "$2" in\nrev-parse) ;;\ncat-file|merge-base)\n'
+                            'test "$GIT_NO_LAZY_FETCH" = 1 || exit 92\n'
+                            'test "$GIT_OPTIONAL_LOCKS" = 0 || exit 93\n;;\n*) exit 94 ;;\nesac')
+        env.update(GIT_NO_LAZY_FETCH="0", GIT_OPTIONAL_LOCKS="1")
+        before = self.snapshot(self.repo)
+        self.script("commit-candidate", "--close", candidate, publication, env=env)
+        self.assertEqual(before, self.snapshot(self.repo))
+
+    def test_close_simple_rejection_not_ready_applying_or_ambiguous_failure(self):
+        self.write("b.txt", "two\n")
+        rejected = self.record("b.txt")
+        self.script("commit-candidate", "--clear", rejected)
+        protected = self.record("b.txt")
+        store = self.receipt(rejected).parent
+        states = [("ready", {}), ("applying", {"reflog_action": "fixture"}),
+                  ("rejected", {"created": None, "reflog_action": "fixture"}),
+                  ("rejected", {"created": self.parent}), ("rejected", {"reflog_action": ""})]
+        for state, extra in states:
+            with self.subTest(state=state, extra=extra):
+                self.set_status(protected, state, **extra)
+                before = self.snapshot(store)
+                self.script("commit-candidate", "--close", rejected, protected, "--accept-unverified", ok=False)
+                self.assertEqual(before, self.snapshot(store))
+        result = self.script("commit-candidate", "--close", rejected)
+        self.assertIn("outcome=rejected", result.stdout)
+        self.assertEqual(self.status(protected)["state"], "rejected")
+
+    def test_close_invalid_duplicate_and_mixed_arguments_create_no_store(self):
+        receipt_id = "a" * 64
+        cases = [["--close"], ["--close", "a" * 63], ["--close", "G" * 64], ["--close", "A" * 64],
+                 ["--close", "../" + receipt_id], ["--close", receipt_id, receipt_id],
+                 ["--close", receipt_id, "--close", "b" * 64],
+                 ["--close", receipt_id, "--dry-run", "--dry-run"],
+                 ["--close", receipt_id, "--accept-unverified", "--accept-unverified"],
+                 ["--close", receipt_id, "--stage"], ["--close", receipt_id, "--message-file", "missing"],
+                 ["--close", receipt_id, "--show", receipt_id], ["--close", receipt_id, "--clear", receipt_id],
+                 ["--close", receipt_id, "--", "a.txt"], ["--close", receipt_id, "a.txt"],
+                 ["--close", receipt_id, "--all"], ["--cl", receipt_id], ["--dry-run", "a.txt"],
+                 ["--accept-unverified", "--stage", "a.txt"], ["--show", receipt_id, "--dry-run"]]
+        before = self.snapshot(self.repo)
+        for args in cases:
+            with self.subTest(args=args):
+                self.script("commit-candidate", *args, ok=False)
+                self.assertFalse((self.root / "records").exists())
+                self.assertEqual(before, self.snapshot(self.repo))
+
+    def test_close_absent_store_or_ids_are_honest_noncreating_noops(self):
+        for flags in (["--dry-run"], []):
+            result = self.script("commit-candidate", "--close", "a" * 64, *flags)
+            self.assertIn("absent:", result.stdout)
+            self.assertIn("prior outcome unknown", result.stdout)
+            self.assertNotIn("outcome=verified", result.stdout)
+            self.assertFalse((self.root / "records").exists())
+        (self.root / "records").mkdir(mode=0o700)
+        self.script("commit-candidate", "--close", "a" * 64, "--dry-run")
+        self.assertEqual(list((self.root / "records").iterdir()), [])
+
+    def test_close_without_acquired_lock_never_inspects_a_newly_created_store(self):
+        self.write("b.txt", "two\n")
+        receipt_id = self.record("b.txt")
+        self.script("commit-candidate", "--clear", receipt_id)
+        store = self.receipt(receipt_id).parent
+        before = self.snapshot(store)
+        runtime = runpy.run_path(str(SKILLS / "commit/scripts/governance.py"))
+        records = object.__new__(runtime["Records"])
+        records.path, records.top, records.lock = store, str(self.repo), None
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), mock.patch.object(Path, "lstat", side_effect=AssertionError("unlocked inspection")):
+            records.close([receipt_id])
+        self.assertIn("absent at inspection", output.getvalue())
+        self.assertNotIn("outcome=", output.getvalue())
+        self.assertEqual(before, self.snapshot(store))
+
+    def test_close_orphan_corrupt_digest_schema_and_status_mismatch_preserve_all(self):
+        self.write("b.txt", "two\n")
+        eligible = self.record("b.txt")
+        self.script("commit-candidate", "--clear", eligible)
+        broken = self.record("b.txt")
+        self.script("commit-candidate", "--clear", broken)
+        path = self.receipt(broken)
+        status_path = path.with_suffix(".status")
+        payload, source = path.read_bytes(), status_path.read_bytes()
+        for defect in ("payload-missing", "status-missing", "payload-corrupt", "digest", "status-corrupt", "status-array",
+                       "status-id", "status-unknown", "status-extra", "kind-state", "commit-shape"):
+            with self.subTest(defect=defect):
+                if defect == "payload-missing":
+                    path.unlink()
+                elif defect == "status-missing":
+                    status_path.unlink()
+                elif defect in ("payload-corrupt", "digest"):
+                    path.chmod(0o600)
+                    path.write_bytes(b"{" if defect == "payload-corrupt" else payload + b" ")
+                elif defect.startswith("status-"):
+                    bad = {"status-corrupt": "{", "status-array": "[]", "status-id": json.dumps({"id": "a" * 64, "state": "rejected"}),
+                           "status-unknown": json.dumps({"id": broken, "state": "mystery"}),
+                           "status-extra": json.dumps({"id": broken, "state": "rejected", "paused": True})}
+                    status_path.write_text(bad[defect])
+                else:
+                    self.set_status(broken, "verified" if defect == "kind-state" else "committed", commit="HEAD")
+                before = self.snapshot(path.parent)
+                result = self.script("commit-candidate", "--close", eligible, broken, "--accept-unverified", ok=False)
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertEqual(before, self.snapshot(path.parent))
+                if path.exists():
+                    path.chmod(0o600)
+                path.write_bytes(payload)
+                path.chmod(0o400)
+                status_path.write_bytes(source)
+                status_path.chmod(0o600)
+        original = json.loads(payload)
+        for changes in ({"version": 2}, {"version": True}, {"kind": "unknown"}, {"toplevel": str(self.root)}, {"toplevel": None}):
+            value = {**original, **changes}
+            data = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+            receipt_id = hashlib.sha256(data).hexdigest()
+            other = path.with_name(receipt_id + ".json")
+            other.write_bytes(data)
+            other.chmod(0o400)
+            self.set_status(receipt_id, "rejected")
+            other.with_suffix(".status").chmod(0o600)
+            before = self.snapshot(path.parent)
+            self.script("commit-candidate", "--close", eligible, receipt_id, ok=False)
+            self.assertEqual(before, self.snapshot(path.parent))
+
+    def test_close_refuses_unsafe_files_and_store_paths(self):
+        self.write("b.txt", "two\n")
+        receipt_id = self.record("b.txt")
+        self.script("commit-candidate", "--clear", receipt_id)
+        path = self.receipt(receipt_id)
+        for target in (path, path.with_suffix(".status"), path.parent / "lock"):
+            original, mode = target.read_bytes(), target.stat().st_mode & 0o777
+            for defect in ("symlink", "dangling", "hardlink", "public", "directory", "fifo"):
+                with self.subTest(target=target.suffix or "lock", defect=defect):
+                    external = self.root / "file-target"
+                    external.write_bytes(original)
+                    external.chmod(0o600)
+                    target.unlink()
+                    if defect in ("symlink", "dangling"):
+                        target.symlink_to(external if defect == "symlink" else self.root / "missing")
+                    elif defect == "hardlink":
+                        os.link(external, target)
+                    elif defect == "directory":
+                        target.mkdir(mode=0o700)
+                    elif defect == "fifo":
+                        os.mkfifo(target, 0o600)
+                    else:
+                        target.write_bytes(original)
+                        target.chmod(0o644)
+                    before = self.snapshot(path.parent)
+                    self.script("commit-candidate", "--close", receipt_id, "--dry-run", ok=False)
+                    self.assertEqual(before, self.snapshot(path.parent))
+                    target.rmdir() if defect == "directory" else target.unlink()
+                    target.write_bytes(original)
+                    target.chmod(mode)
+        alias = self.root / "alias"
+        alias.symlink_to(self.root, target_is_directory=True)
+        for root in ("records", str(alias / "records")):
+            before = self.snapshot(path.parent)
+            self.script("commit-candidate", "--close", receipt_id,
+                        env={**self.env, "EYRAGENTS_RECORD_ROOT": root}, ok=False)
+            self.assertEqual(before, self.snapshot(path.parent))
+        for directory in (path.parent, path.parent.parent):
+            directory.chmod(0o755)
+            before = self.snapshot(path.parent)
+            self.script("commit-candidate", "--close", receipt_id, ok=False)
+            self.assertEqual(before, self.snapshot(path.parent))
+            directory.chmod(0o700)
+            directory.chmod(0o600)
+            try:
+                result = self.script("commit-candidate", "--close", receipt_id, ok=False)
+                self.assertNotIn("absent:", result.stdout)
+            finally:
+                directory.chmod(0o700)
+        (path.parent / "lock").unlink()
+        before = self.snapshot(path.parent)
+        self.assertIn("no lock", self.script("commit-candidate", "--close", receipt_id, "--dry-run", ok=False).stderr)
+        self.assertEqual(before, self.snapshot(path.parent))
+
+    def test_close_other_worktree_receipts_are_preserved(self):
+        candidate, publication = self.close_bundle()
+        other = self.root / "other-worktree"
+        self.git("worktree", "add", "-q", "-b", "other", str(other))
+        before = self.snapshot(self.receipt(candidate).parent)
+        result = self.script("commit-candidate", "--close", candidate, publication, "--accept-unverified", cwd=other, ok=False)
+        self.assertIn("another worktree", result.stderr)
+        self.assertEqual(before, self.snapshot(self.receipt(candidate).parent))
+
+    def test_close_all_interruption_boundaries_resume_without_tombstones(self):
+        candidate, publication = self.close_bundle()
+        paths = [self.receipt(receipt_id) for receipt_id in (candidate, publication)]
+        originals = {path: (path.read_bytes(), path.with_suffix(".status").read_bytes()) for path in paths}
+        store = paths[0].parent
+        lock = (store / "lock").stat().st_ino
+        before_git = self.snapshot(self.repo)
+        for phase, target in (("mark", candidate), ("mark", publication), ("json", candidate),
+                              ("status", candidate), ("json", publication), ("status", publication)):
+            with self.subTest(phase=phase, target=target):
+                self.interrupt_close((candidate, publication), phase, target)
+                if phase != "mark":
+                    for status_path in store.glob("*.status"):
+                        self.assertEqual(json.loads(status_path.read_text())["state"], "closing")
+                before = self.snapshot(store)
+                self.script("commit-candidate", "--close", candidate, publication, "--dry-run")
+                self.assertEqual(before, self.snapshot(store))
+                # Provenance scanning must tolerate even a payload-less closing marker.
+                runner = ('import os, runpy, sys; m=runpy.run_path(sys.argv[1]); '
+                          'r=m["Records"](); os.chdir(r.top); r.committed()')
+                self.run_command([sys.executable, "-I", "-c", runner, str(SKILLS / "commit/scripts/governance.py")])
+                result = self.script("commit-candidate", "--close", candidate, publication)
+                self.assertNotIn("outcome=UNVERIFIED", result.stdout)
+                self.assertEqual([path.name for path in store.iterdir()], ["lock"])
+                self.assertEqual((store / "lock").stat().st_ino, lock)
+                self.assertEqual(before_git, self.snapshot(self.repo))
+                for path, (payload, source) in originals.items():
+                    path.write_bytes(payload)
+                    path.chmod(0o400)
+                    path.with_suffix(".status").write_bytes(source)
+                    path.with_suffix(".status").chmod(0o600)
+
+    def test_close_internal_marker_write_boundaries_leave_no_receipt_copies(self):
+        candidate, publication = self.close_bundle()
+        paths = [self.receipt(receipt_id) for receipt_id in (candidate, publication)]
+        originals = {path: (path.read_bytes(), path.with_suffix(".status").read_bytes()) for path in paths}
+        store = paths[0].parent
+        lock = (store / "lock").stat().st_ino
+        before_git = self.snapshot(self.repo)
+        phases = ("fsync", "create", "partial-write", "write", "before-replace", "replace")
+        for phase, target in ((phase, target) for phase in phases for target in (candidate, publication)):
+            with self.subTest(phase=phase, target=target):
+                self.interrupt_close((candidate, publication), phase, target)
+                staging = store / f".close-{target}.write"
+                self.assertEqual(staging.exists(), phase != "replace")
+                if phase == "create":
+                    self.assertEqual(staging.read_bytes(), b"")
+                if phase == "partial-write":
+                    prefix = staging.read_bytes()
+                    self.assertTrue(prefix)
+                    self.interrupt_close((candidate, publication), phase, target)
+                    self.assertEqual(staging.read_bytes(), prefix)
+                before = self.snapshot(store)
+                self.script("commit-candidate", "--close", candidate, publication, "--dry-run")
+                self.assertEqual(before, self.snapshot(store))
+                self.script("commit-candidate", "--close", candidate, publication)
+                self.assertEqual([path.name for path in store.iterdir()], ["lock"])
+                self.assertEqual(lock, (store / "lock").stat().st_ino)
+                self.assertEqual(before_git, self.snapshot(self.repo))
+                for path, (payload, source) in originals.items():
+                    path.write_bytes(payload)
+                    path.chmod(0o400)
+                    path.with_suffix(".status").write_bytes(source)
+                    path.with_suffix(".status").chmod(0o600)
+
+    def test_close_staging_preflight_preserves_mismatched_orphan_and_unsafe_entries(self):
+        candidate, publication = self.close_bundle()
+        path = self.receipt(candidate)
+        originals = path.read_bytes(), path.with_suffix(".status").read_bytes()
+        store = path.parent
+        self.interrupt_close((candidate, publication), "partial-write", candidate)
+        staging = store / f".close-{candidate}.write"
+        prefix = staging.read_bytes()
+        for defect in ("mismatch", "oversized", "orphan", "symlink", "hardlink", "public", "fifo", "directory"):
+            with self.subTest(defect=defect):
+                staging.unlink()
+                external = self.root / "staging-target"
+                external.write_bytes(prefix)
+                external.chmod(0o600)
+                if defect == "symlink":
+                    staging.symlink_to(external)
+                elif defect == "hardlink":
+                    os.link(external, staging)
+                elif defect == "fifo":
+                    os.mkfifo(staging, 0o600)
+                elif defect == "directory":
+                    staging.mkdir(mode=0o700)
+                else:
+                    staging.write_bytes(b"unknown staging bytes" if defect == "mismatch" else
+                                        b"x" * (5 * 1024 * 1024 + 1) if defect == "oversized" else prefix)
+                    staging.chmod(0o644 if defect == "public" else 0o600)
+                if defect == "orphan":
+                    path.unlink()
+                    path.with_suffix(".status").unlink()
+                before = self.snapshot(store)
+                for flags in ([], ["--dry-run"]):
+                    result = self.script("commit-candidate", "--close", publication, candidate, *flags, ok=False)
+                    self.assertNotIn("close-out complete", result.stdout)
+                    self.assertEqual(before, self.snapshot(store))
+                staging.rmdir() if defect == "directory" else staging.unlink()
+                staging.write_bytes(prefix)
+                staging.chmod(0o600)
+                if defect == "orphan":
+                    path.write_bytes(originals[0])
+                    path.chmod(0o400)
+                    path.with_suffix(".status").write_bytes(originals[1])
+                    path.with_suffix(".status").chmod(0o600)
+        unknown = store / ".write-unattributed"
+        unknown.write_text("unknown writer; do not sweep\n")
+        unknown.chmod(0o600)
+        foreign = store / (".close-" + "f" * 64 + ".write")
+        foreign.symlink_to(self.root / "missing")
+        untouched = {name: self.snapshot(store)[name] for name in (unknown.name, foreign.name, "lock")}
+        self.script("commit-candidate", "--close", publication, candidate)
+        self.assertFalse(staging.exists())
+        self.assertEqual(untouched, {name: self.snapshot(store)[name] for name in untouched})
+
+    def test_close_staging_requires_original_selection_and_unverified_disposition(self):
+        candidate, publication = self.close_bundle(verified=False)
+        store = self.receipt(candidate).parent
+        self.interrupt_close((candidate, publication), "fsync", candidate, "--accept-unverified")
+        before = self.snapshot(store)
+        for args in ((candidate, publication), (candidate, "--accept-unverified")):
+            self.script("commit-candidate", "--close", *args, ok=False)
+            self.assertEqual(before, self.snapshot(store))
+        result = self.script("commit-candidate", "--close", candidate, publication, "--accept-unverified")
+        self.assertEqual(result.stdout.count("outcome=UNVERIFIED"), 2)
+        self.assertNotIn("outcome=verified", result.stdout)
+        self.assertEqual([path.name for path in store.iterdir()], ["lock"])
+
+    def test_close_staging_resumes_with_reordered_equally_eligible_publications(self):
+        candidate, first = self.close_bundle()
+        second, _ = self.binding()
+        self.script("publish-verify", second)
+        publications = sorted((first, second))
+        paths = [self.receipt(receipt_id) for receipt_id in (candidate, *publications)]
+        originals = {path: (path.read_bytes(), path.with_suffix(".status").read_bytes()) for path in paths}
+        store = paths[0].parent
+        lock = self.snapshot(store)["lock"]
+        before_git = self.snapshot(self.repo)
+        for mode in ("verified", "unverified", "mixed"):
+            with self.subTest(mode=mode):
+                if mode != "verified":
+                    self.set_status(publications[0], "ready")
+                if mode == "unverified":
+                    self.set_status(publications[1], "ready")
+                flags = [] if mode == "verified" else ["--accept-unverified"]
+                self.interrupt_close((candidate, *reversed(publications)), "fsync", candidate, *flags)
+                reordered = (publications[0], candidate, publications[1])
+                before = self.snapshot(store)
+                self.script("commit-candidate", "--close", *reordered, *flags, "--dry-run")
+                self.assertEqual(before, self.snapshot(store))
+                marker = json.loads((store / f".close-{candidate}.write").read_text())
+                self.assertEqual(marker["coverage"]["id"], publications[1 if mode == "mixed" else 0])
+                result = self.script("commit-candidate", "--close", *reordered, *flags)
+                verified_count = {"verified": 3, "unverified": 0, "mixed": 2}[mode]
+                self.assertEqual(result.stdout.count("outcome=verified"), verified_count)
+                self.assertEqual(result.stdout.count("outcome=UNVERIFIED"), 3 - verified_count)
+                self.assertEqual([path.name for path in store.iterdir()], ["lock"])
+                self.assertEqual(lock, self.snapshot(store)["lock"])
+                self.assertEqual(before_git, self.snapshot(self.repo))
+                for path, (payload, source) in originals.items():
+                    path.write_bytes(payload)
+                    path.chmod(0o400)
+                    path.with_suffix(".status").write_bytes(source)
+                    path.with_suffix(".status").chmod(0o600)
+
+    def test_close_unverified_recovery_requires_flag_and_validates_snapshots(self):
+        candidate, publication = self.close_bundle(verified=False)
+        path = self.receipt(candidate)
+        self.interrupt_close((publication, candidate), "status", publication, "--accept-unverified")
+        status_path = path.with_suffix(".status")
+        original = status_path.read_bytes()
+        before = self.snapshot(path.parent)
+        self.script("commit-candidate", "--close", candidate, ok=False)
+        self.assertEqual(before, self.snapshot(path.parent))
+        marker = json.loads(original)
+        for defect in ("payload", "coverage", "outcome", "version", "toplevel"):
+            damaged = json.loads(original)
+            if defect == "payload":
+                damaged["payload"] += " "
+            elif defect == "coverage":
+                damaged["coverage"]["payload"] += " "
+            elif defect == "outcome":
+                damaged["outcome"] = "verified"
+            elif defect == "version":
+                damaged["version"] = 2
+            else:
+                payload = json.loads(damaged["payload"])
+                payload["toplevel"] = str(self.root)
+                damaged["payload"] = json.dumps(payload)
+            status_path.write_text(json.dumps(damaged))
+            before = self.snapshot(path.parent)
+            self.script("commit-candidate", "--close", candidate, "--accept-unverified", ok=False)
+            self.assertEqual(before, self.snapshot(path.parent))
+        status_path.write_bytes(original)
+        self.assertEqual(marker["outcome"], "UNVERIFIED")
+        path.unlink()  # Resume at the payload/status boundary with no surviving publication.
+        result = self.script("commit-candidate", "--close", candidate, publication, "--accept-unverified")
+        self.assertEqual(result.stdout.count("outcome=UNVERIFIED"), 1)
+        self.assertIn("absent: " + publication, result.stdout)
+        self.assertNotIn("outcome=verified", result.stdout)
+
+    def test_close_large_transient_marker_remains_readable_and_resumable(self):
+        self.write("b.txt", "two\n")
+        receipt_id = self.record("b.txt", message=MESSAGE + "\\" * 300000 + "\n")
+        self.script("commit-candidate", "--clear", receipt_id)
+        path = self.receipt(receipt_id)
+        self.interrupt_close((receipt_id,), "json", receipt_id)
+        self.assertGreater(path.with_suffix(".status").stat().st_size, 1024 * 1024)
+        runner = ('import os, runpy, sys; m=runpy.run_path(sys.argv[1]); '
+                  'r=m["Records"](); os.chdir(r.top); r.committed()')
+        self.run_command([sys.executable, "-I", "-c", runner, str(SKILLS / "commit/scripts/governance.py")])
+        self.script("commit-candidate", "--close", receipt_id)
+        self.assertEqual([entry.name for entry in path.parent.iterdir()], ["lock"])
+
+    def test_close_contention_uses_unchanged_common_directory_lock(self):
+        candidate, publication = self.close_bundle()
+        store = self.receipt(candidate).parent
+        before = self.snapshot(store)
+        with (store / "lock").open("rb") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            for flags in ([], ["--dry-run"]):
+                result = self.script("commit-candidate", "--close", candidate, publication, *flags, ok=False)
+                self.assertIn("another governance operation is active", result.stderr)
+                self.assertEqual(before, self.snapshot(store))
+        self.script("commit-candidate", "--close", candidate, publication)
+        self.assertEqual(before["lock"], self.snapshot(store)["lock"])
 
     def test_printed_command_carries_its_private_record_root(self):
         self.outbound()

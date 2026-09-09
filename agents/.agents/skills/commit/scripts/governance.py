@@ -30,6 +30,8 @@ import uuid
 SCRIPTS = Path(__file__).resolve().parent
 SCANNER = SCRIPTS / "../../spar/scripts/spar-payload-scan"
 LIMIT = 1024 * 1024
+# A transient close marker can contain two escaped, digest-checked receipts.
+CLOSE_LIMIT = 5 * LIMIT
 DIAGNOSTIC_LIMIT = 8192
 OBSERVE_TIMEOUT = 30
 NOREPLY = re.compile(r"[^\s<>@]+@users\.noreply\.github\.com")
@@ -98,22 +100,38 @@ def private_dir(path):
             and not info.st_mode & 0o077, "record directory must be private, owned, and not a symlink")
 
 
-def read_private(path):
+def read_private(path, limit=LIMIT):
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
         info = os.fstat(fd)
         require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
                 and info.st_nlink == 1 and not info.st_mode & 0o077, "unsafe record file")
         with os.fdopen(fd, "rb", closefd=False) as stream:
-            data = stream.read(LIMIT + 1)
-        require(len(data) <= LIMIT, "record exceeds limit")
+            data = stream.read(limit + 1)
+        require(len(data) <= limit, "record exceeds limit")
         return data
     finally:
         os.close(fd)
 
 
-def atomic(path, data, immutable=False):
-    fd, name = tempfile.mkstemp(prefix=".write-", dir=path.parent)
+def record_exists(path):
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def atomic(path, data, immutable=False, staging=None):
+    if staging is None:
+        fd, name = tempfile.mkstemp(prefix=".write-", dir=path.parent)
+    else:
+        name = staging
+        try:
+            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        except FileExistsError:
+            require(data.startswith(read_private(name, CLOSE_LIMIT)), "close-out staging mismatch; preserve state for H")
+            fd = os.open(name, os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
         with os.fdopen(fd, "wb") as stream:
             stream.write(data)
@@ -126,20 +144,52 @@ def atomic(path, data, immutable=False):
         else:
             os.replace(name, path)
     finally:
-        Path(name).unlink(missing_ok=True)
+        # Close-out staging is exact-ID-addressed and recovered on retry, even
+        # after termination before any bytes reach disk. Other writers are unchanged.
+        if staging is None:
+            Path(name).unlink(missing_ok=True)
+
+
+def candidate_commit(value, raw):
+    headers, separator, message = raw.partition(b"\n\n")
+    fields = headers.splitlines()
+    parents = [line[7:].decode() for line in fields if line.startswith(b"parent ")]
+    identities = value.get("identity")
+    same_identity = (isinstance(identities, dict) and set(identities) == {"author", "committer"}
+                     and all(isinstance(who, list) and len(who) == 2 and all(isinstance(part, str) for part in who)
+                             and len([line for line in fields if line.startswith((role + " ").encode())]) == 1
+                             and any(re.fullmatch(re.escape((role + " " + who[0] + " <" + who[1] + ">").encode())
+                                                  + rb" [0-9]+ [+-][0-9]{4}", line) for line in fields)
+                             for role, who in identities.items()))
+    matches = (separator and all(isinstance(value.get(key), str) for key in ("tree", "parent", "message"))
+               and [line for line in fields if line.startswith(b"tree ")] == [b"tree " + value["tree"].encode()]
+               and parents == [value["parent"]] and message == value["message"].encode() and same_identity)
+    return parents, bool(matches)
 
 
 class Records:
-    def __init__(self):
+    def __init__(self, create=True):
         self.cwd = os.getcwd()
         self.top = text("rev-parse", "--show-toplevel")
         common = text("rev-parse", "--path-format=absolute", "--git-common-dir")
         root = Path(os.environ.get("EYRAGENTS_RECORD_ROOT", f"/tmp/eyragents-{os.getuid()}"))
         require(root.is_absolute(), "record root must be absolute")
-        private_dir(root)
         self.path = root / digest(os.fsencode(common))
-        private_dir(self.path)
-        self.lock = os.open(self.path / "lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        self.lock = None
+        if create:
+            private_dir(root)
+            private_dir(self.path)
+        else:
+            require(root == root.resolve(), "close-out record root must have real, canonical parents")
+            for path in (root, self.path):
+                if not record_exists(path):
+                    return
+                info = path.lstat()
+                require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid()
+                        and not info.st_mode & 0o077, "record directory must be private, owned, and not a symlink")
+            require(record_exists(self.path / "lock"), "existing record store has no lock; close-out refused")
+        flags = os.O_CREAT | os.O_RDWR if create else os.O_RDONLY
+        self.lock = os.open(self.path / "lock", flags | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
         info = os.fstat(self.lock)
         require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
                 and info.st_nlink == 1 and not info.st_mode & 0o077, "unsafe record lock")
@@ -152,7 +202,7 @@ class Records:
         path = self.path / f"{receipt_id}.status"
         if state is not None:
             atomic(path, encoded({"id": receipt_id, "state": state, **extra}))
-        value = json.loads(read_private(path))
+        value = json.loads(read_private(path, CLOSE_LIMIT))
         require(value["id"] == receipt_id, "status does not match receipt")
         return value
 
@@ -180,7 +230,7 @@ class Records:
     def committed(self):
         commits = set()
         for path in self.path.glob("*.status"):
-            value = json.loads(read_private(path))
+            value = json.loads(read_private(path, CLOSE_LIMIT))
             if value.get("state") == "committed":
                 receipt_id = value["id"]
                 require(path.stem == receipt_id and re.fullmatch(r"[a-f0-9]{64}", receipt_id), "invalid provenance status")
@@ -188,6 +238,175 @@ class Records:
                 require(digest(data) == receipt_id and json.loads(data)["kind"] == "candidate", "invalid provenance receipt")
                 commits.add(value["commit"])
         return commits
+
+    def close_source(self, receipt_id, payload, source):
+        require(isinstance(payload, str), "invalid close-out receipt snapshot")
+        data = payload.encode("utf-8")
+        require(len(data) <= LIMIT and digest(data) == receipt_id, "receipt digest mismatch")
+        value = json.loads(data)
+        require(isinstance(value, dict) and type(value.get("version")) is int and value["version"] == 1,
+                "unsupported close-out receipt version")
+        require(value.get("kind") in ("candidate", "publish"), "unknown close-out receipt kind")
+        require(value.get("toplevel") == self.top, "close-out receipt belongs to another worktree")
+        require(isinstance(source, dict) and source.get("id") == receipt_id, "status does not match receipt")
+        state = source.get("state")
+        require(state in ("ready", "rejected", "committed", "verified"),
+                "active or unknown receipt status; close-out refused")
+        require(not {"created", "reflog_action"}.intersection(source),
+                "ambiguous commit-recovery evidence; preserve the receipt for H")
+        fields = {"id", "state", "commit"} if state in ("committed", "verified") else {"id", "state"}
+        require(set(source) == fields, "unknown or incomplete close-out status fields")
+        require(state not in ("committed", "verified") or
+                value["kind"] == ("candidate" if state == "committed" else "publish"),
+                "receipt kind/status mismatch")
+        if value["kind"] == "publish":
+            require(isinstance(value.get("reviewed"), str)
+                    and re.fullmatch(r"(?:[a-f0-9]{40}|[a-f0-9]{64})", value["reviewed"]),
+                    "invalid reviewed publication commit")
+        if "commit" in source:
+            require(isinstance(source["commit"], str)
+                    and re.fullmatch(r"(?:[a-f0-9]{40}|[a-f0-9]{64})", source["commit"]),
+                    "invalid close-out commit ID")
+        if state == "verified":
+            require(source["commit"] == value["reviewed"], "verified status/reviewed commit mismatch")
+        return value
+
+    def close(self, ids, dry_run=False, accept_unverified=False):
+        git_env = dict(os.environ, GIT_NO_LAZY_FETCH="1", GIT_OPTIONAL_LOCKS="0")
+        selected = {}
+        pending = {}
+        for receipt_id in ids:
+            # A missing store was observed without a lock. Do not touch a store
+            # another operation might have created since that observation.
+            if self.lock is None:
+                selected[receipt_id] = None
+                continue
+            payload_path = self.path / f"{receipt_id}.json"
+            status_path = payload_path.with_suffix(".status")
+            staging = self.path / f".close-{receipt_id}.write"
+            if record_exists(staging):
+                pending[receipt_id] = read_private(staging, CLOSE_LIMIT)
+            payload_exists = record_exists(payload_path)
+            status_exists = record_exists(status_path)
+            if not payload_exists and not status_exists:
+                require(receipt_id not in pending, f"{receipt_id}: orphan close-out staging; preserve state for H")
+                selected[receipt_id] = None
+                continue
+            require(status_exists, f"{receipt_id}: orphan payload; close-out refused")
+            status_value = json.loads(read_private(status_path, CLOSE_LIMIT))
+            require(isinstance(status_value, dict) and status_value.get("id") == receipt_id,
+                    "status does not match receipt")
+            closing = status_value.get("state") == "closing"
+            if closing:
+                require(set(status_value) == {"id", "state", "version", "payload", "source", "coverage", "outcome"}
+                        and type(status_value["version"]) is int and status_value["version"] == 1,
+                        "invalid transient closing state")
+                entry = status_value
+                if payload_exists:
+                    require(read_private(payload_path).decode("utf-8") == entry["payload"],
+                            "closing snapshot/payload mismatch")
+            else:
+                require(payload_exists, f"{receipt_id}: orphan status without a closing marker; close-out refused")
+                entry = {"id": receipt_id, "state": "closing", "version": 1,
+                         "payload": read_private(payload_path).decode("utf-8"), "source": status_value,
+                         "coverage": None, "outcome": None}
+            value = self.close_source(receipt_id, entry["payload"], entry["source"])
+            selected[receipt_id] = (entry, value, closing, payload_exists)
+
+        # A marker carries its own original bytes and, for a committed candidate,
+        # one publication proof. Recovery never needs a deleted peer or tombstone.
+        for receipt_id, item in selected.items():
+            if item is None:
+                continue
+            entry, value, closing, _ = item
+            state = entry["source"]["state"]
+            outcome = "rejected"
+            if value["kind"] == "publish":
+                if state == "verified":
+                    outcome = "verified"
+                elif state == "ready" or (state == "rejected" and accept_unverified and not closing):
+                    require(accept_unverified, f"{receipt_id}: publication is unverified; explicit --accept-unverified required")
+                    outcome = "UNVERIFIED"
+                elif closing and entry["outcome"] == "UNVERIFIED":
+                    outcome = "UNVERIFIED"
+                require(entry["coverage"] is None, "unexpected publication coverage in closing marker")
+            elif state == "committed":
+                commit = entry["source"]["commit"]
+                require(git("cat-file", "-t", commit, env=git_env).strip() == b"commit", "committed candidate object is not a commit")
+                _, matches = candidate_commit(value, git("cat-file", "commit", commit, env=git_env))
+                require(matches, f"{receipt_id}: committed candidate mismatch (tree, parents, message or identities); preserve state for H")
+                proofs = []
+                if closing:
+                    proof = entry["coverage"]
+                    require(isinstance(proof, dict) and set(proof) == {"id", "payload", "source"}
+                            and isinstance(proof["id"], str) and re.fullmatch(r"[a-f0-9]{64}", proof["id"]),
+                            "invalid closing publication proof")
+                    published = self.close_source(proof["id"], proof["payload"], proof["source"])
+                    require(published["kind"] == "publish", "closing coverage is not a publication")
+                    proofs.append((proof, published))
+                else:
+                    for peer in selected.values():
+                        if peer is not None and peer[1]["kind"] == "publish":
+                            publication = peer[0]
+                            proofs.append(({key: publication[key] for key in ("id", "payload", "source")}, peer[1]))
+                    proofs.sort(key=lambda pair: (pair[0]["source"]["state"] != "verified", pair[0]["id"]))
+                covered = False
+                for proof, published in proofs:
+                    verified = proof["source"]["state"] == "verified"
+                    if not verified and not accept_unverified:
+                        continue
+                    require(git("cat-file", "-t", published["reviewed"], env=git_env).strip() == b"commit",
+                            "reviewed publication object is not a commit")
+                    ancestry = git("merge-base", "--is-ancestor", commit, published["reviewed"], env=git_env, check=False)
+                    require(ancestry.returncode in (0, 1), "cannot establish publication ancestry; close-out refused")
+                    if ancestry.returncode == 0:
+                        entry["coverage"] = proof
+                        outcome = "verified" if verified else "UNVERIFIED"
+                        covered = True
+                        break
+                require(covered, f"{receipt_id}: committed candidate requires selected eligible publication ancestry coverage"
+                        + (" (or --accept-unverified for a selected publication attempt)" if not accept_unverified else ""))
+            else:
+                require(state == "rejected", f"{receipt_id}: ready candidates must be preserved")
+                require(entry["coverage"] is None, "unexpected candidate coverage in closing marker")
+            require(outcome != "UNVERIFIED" or accept_unverified,
+                    "resuming UNVERIFIED close-out requires --accept-unverified")
+            require(not closing or entry["outcome"] == outcome, "closing disposition mismatch; preserve state for H")
+            entry["outcome"] = outcome
+            require(len(encoded(entry)) <= CLOSE_LIMIT, "closing marker exceeds limit; no records changed")
+            if receipt_id in pending:
+                require(encoded(entry).startswith(pending[receipt_id]),
+                        f"{receipt_id}: close-out staging mismatch; retry the original selection/disposition or inspect with H")
+
+        if not dry_run and any(item is not None for item in selected.values()):
+            directory = os.open(self.path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                # Durably mark the whole selection before removing any payload.
+                for receipt_id, item in selected.items():
+                    if item is not None and (not item[2] or receipt_id in pending):
+                        atomic(self.path / f"{receipt_id}.status", encoded(item[0]),
+                               staging=self.path / f".close-{receipt_id}.write")
+                os.fsync(directory)
+                for receipt_id, item in selected.items():
+                    if item is None:
+                        continue
+                    if item[3]:
+                        (self.path / f"{receipt_id}.json").unlink()
+                        os.fsync(directory)
+                    (self.path / f"{receipt_id}.status").unlink()
+                    os.fsync(directory)
+            finally:
+                os.close(directory)
+        for receipt_id, item in selected.items():
+            if item is None:
+                print(f"absent: {receipt_id}; absent at inspection, prior outcome unknown")
+            else:
+                entry, value, closing, _ = item
+                action = "would close" if dry_run else "closed"
+                print(f"{action}: {receipt_id} kind={value['kind']} outcome={entry['outcome']}"
+                      + (" (resumed)" if closing else ""))
+        print("close-out preview complete for selected IDs" if dry_run else "close-out complete for selected IDs")
+        print("receipt disposition only; no new push, remote observation, gate or policy attestation")
 
 
 def scan(data, mode="reply", label="payload"):
@@ -320,15 +539,35 @@ def report_inspection(value):
         print("H's approval/publication is conditional on inspecting these exact objects; inspection is not machine-attested")
 
 
-def candidate(records, args):
-    parser = argparse.ArgumentParser(prog="commit-candidate")
+def candidate_options(args):
+    parser = argparse.ArgumentParser(prog="commit-candidate", allow_abbrev=False)
     parser.add_argument("--stage", action="store_true")
     parser.add_argument("--message-file")
     actions = parser.add_mutually_exclusive_group()
     actions.add_argument("--show")
     actions.add_argument("--clear")
+    actions.add_argument("--close", nargs="+")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--accept-unverified", action="store_true")
     parser.add_argument("paths", nargs="*")
     opts = parser.parse_args(args)
+    require(opts.close is not None or not (opts.dry_run or opts.accept_unverified),
+            "--dry-run and --accept-unverified require --close")
+    if opts.close is not None:
+        for flag in ("--close", "--dry-run", "--accept-unverified"):
+            require(sum(arg.split("=", 1)[0] == flag for arg in args) <= 1, "duplicate close-out flag: " + flag)
+        require(not opts.stage and opts.message_file is None and not opts.paths,
+                "--close cannot be combined with candidate flags or paths")
+        require(all(re.fullmatch(r"[a-f0-9]{64}", receipt_id) for receipt_id in opts.close),
+                "--close requires explicit 64-character lowercase hex receipt IDs")
+        require(len(set(opts.close)) == len(opts.close), "duplicate close-out receipt IDs")
+    return opts
+
+
+def candidate(records, opts):
+    if opts.close is not None:
+        records.close(opts.close, opts.dry_run, opts.accept_unverified)
+        return
     if opts.show or opts.clear:
         require(not opts.stage and not opts.message_file and not opts.paths, "show/clear cannot be combined with candidate options")
         receipt_id = opts.show or opts.clear
@@ -462,18 +701,10 @@ def apply(records, args):
                 + (", ".join(sorted(events)) or "none"))
         created = events.pop()
         raw = git("cat-file", "commit", created)
-        headers, _, message = raw.partition(b"\n\n")
-        fields = headers.splitlines()
-        parents = [line[7:].decode() for line in fields if line.startswith(b"parent ")]
-        expected_identities = value["identity"]
-        same_identity = all(any(re.fullmatch(re.escape((role + " " + who[0] + " <" + who[1] + ">").encode())
-                                            + rb" [0-9]+ [+-][0-9]{4}", line) for line in fields)
-                            for role, who in expected_identities.items())
-        matches = (result.returncode == 0 and b"tree " + value["tree"].encode() in fields
-                   and parents == [value["parent"]] and message == value["message"].encode() and same_identity)
+        parents, matches = candidate_commit(value, raw)
         position = (git("symbolic-ref", "-q", "HEAD", check=False).stdout.strip().decode() == value["branch"]
                     and text("rev-parse", value["branch"]) == created)
-        if not matches or not position:
+        if result.returncode != 0 or not matches or not position:
             # Only the exact commit identified by this invocation may be CAS'd.
             # Never sample an arbitrary new tip as the expected old value, and
             # never switch a checkout that a hook or another actor moved.
@@ -863,10 +1094,11 @@ def verify(records, args):
 def main():
     try:
         require(len(sys.argv) >= 2, "entrypoint required", 64)
-        records = Records()
-        os.chdir(records.top)
         operation = {"candidate": candidate, "apply": apply, "bind": bind, "verify": verify}[sys.argv[1]]
-        operation(records, sys.argv[2:])
+        args = candidate_options(sys.argv[2:]) if operation is candidate else sys.argv[2:]
+        records = Records(create=not (operation is candidate and args.close is not None))
+        os.chdir(records.top)
+        operation(records, args)
     except Refused as error:
         print(f"governance: {error}", file=sys.stderr)
         return error.code

@@ -2,5 +2,14 @@
 # Record the prepared index; --stage explicitly stages whole intended paths.
 # Usage: commit-candidate [--stage] [--message-file FILE] -- PATH...
 #        commit-candidate --show ID | --clear ID
+#        commit-candidate --close ID... [--dry-run] [--accept-unverified]
+# Close only explicit full IDs after all-record preflight under the existing lock.
+# Committed IDs must match the immutable candidate and selected publication ancestry;
+# historical commits need no current-tip/config-identity match. Ready candidates
+# and ambiguous apply failures stay. Unverified publication close-out is explicit,
+# not push confirmation or policy attestation. Interrupted close-out is resumable.
+# Exact-ID .close-ID.write staging resumes only from a matching marker prefix;
+# orphan/mismatched/unsafe staging refuses. Unknown .write-* files are never swept.
+# Preview changes no records; close retains the lock inode and never changes Git.
 set -euo pipefail
 exec python3 -I "$(dirname -- "$(realpath -e -- "${BASH_SOURCE[0]}")")/governance.py" candidate "$@"
