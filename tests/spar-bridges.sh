@@ -263,6 +263,107 @@ done
 } >"$TMP/art/code.md"
 printf 'Review.' | "${SCAN_OUT[@]}" "$TMP/art/code.md" >/dev/null 2>&1 ||
   fail "scanner rejected credential-handling code without a literal secret"
+# Generate scanner fixtures from label/value pairs rather than embedding
+# credential assignments as literals in this test's own source.
+python3 - "$SCANNER" <<'PY'
+import runpy
+import subprocess
+import sys
+
+scanner = sys.argv[1]
+policy = runpy.run_path(scanner)
+count = 0
+
+def declaration(name, value):
+    return name + " = " + value + "\n"
+
+def check(source, accepted, mode="reply"):
+    global count
+    result = subprocess.run([scanner, mode], input=source, text=True, capture_output=True)
+    assert result.returncode == (0 if accepted else 2), (mode, accepted, result.stderr)
+    assert "opaque-material-49a8" not in result.stderr, "scanner disclosed rejected fixture bytes"
+    count += 1
+
+inventories = (
+    ("SECRET_DIRS", [".ssh", ".aws", ".gnupg", ".kube", ".mozilla", "secrets"], "{}"),
+    ("SECRET_FILES", [".env", ".envrc", ".netrc", ".npmrc", ".pypirc", "auth.json", "credentials",
+                      ".credentials.json", ".bash_history", ".zsh_history", "id_rsa", "id_dsa",
+                      "id_ecdsa", "id_ed25519"], "{}"),
+    ("SECRET_GLOBS", [".env.*", "credentials.*", "*.key", "*.pem", "*.p12", "*.pfx"], "()"),
+    ("SECRET_SUFFIXES", [".config/gh/hosts.yml", ".docker/config.json", ".hermes/config.yaml", ".codex/config.toml"], "()"),
+    ("SECRET_TREES", [".config/BraveSoftware", ".config/chromium", ".local/share/keyrings"], "()"),
+)
+for name, values, brackets in inventories:
+    for multiline in (False, True):
+        body = (",\n    " if multiline else ", ").join(map(repr, values)) + ","
+        value = brackets[0] + ("\n    " if multiline else "") + body + ("\n" if multiline else "") + brackets[1]
+        source = declaration(name, value)
+        check(source, True)
+        check("diff --git a/policy.py b/policy.py\n" + "\n".join("+" + line for line in source.splitlines()), True, "diff")
+        assert not policy["content_findings"]("fixture", source, True)
+
+for value in ("[]", "()", "{}", "['.ssh']", "{\n\n    '.env',\n}"):
+    check(declaration("OTHER_SECRET_PATHS", value), True)
+    check("\n".join("+" + line for line in declaration("OTHER_SECRET_PATHS", value).splitlines()), True, "diff")
+
+for value in (
+    "{'opaque-material-49a8'}", "['.ssh', 'opaque-material-49a8']",
+    "{'api_key': 'opaque-material-49a8'}", "[['.ssh']]", "{'.env': '.ssh'}",
+    "[None]", "[1]", "[b'.ssh']", "[name]", "[str('.ssh')]", "[p for p in ['.ssh']]",
+    "['.ssh'] + ['opaque-material-49a8']", "['.ssh']; other = 'opaque-material-49a8'",
+    "['.ssh'] # opaque-material-49a8", "{\n    '.ssh', # comment\n}",
+    "{", "['.ssh'", "['.ssh',", "('.ssh')", "['line\\nbreak.pem']",
+    r"['.ssh/\qopaque-material-49a8']",
+    "['https://example.invalid/private.pem']", "['a' * 200]",
+    "[" + ",".join(["'.ssh'"] * 257) + "]",
+    "(\n" + "\n" * 128 + "'.ssh',\n)",
+    "['.ssh']" + " " * 17000 + "+ ['opaque-material-49a8']",
+):
+    check(declaration("SECRET_FILES", value), False)
+    check("\n".join("+" + line for line in declaration("SECRET_FILES", value).splitlines()), False, "diff")
+
+# Metadata names do not exempt scalar values or generic value collections.
+# The two earlier code-value watch cases remain conservative refusals.
+for name, value in (("API_KEY", repr("opaque-material-49a8")), ("SECRET", "['.ssh']"),
+                    ("TOKEN", 'payload["item"]'), ("TOKEN", '"$1"')):
+    check(declaration(name, value), False)
+
+provider_value = "sk-" + "a" * 24
+check(declaration("SECRET_FILES", repr([".ssh/" + provider_value])), False)
+check(declaration("SECRET_FILES", "['.ssh/\\x73k-" + "a" * 24 + "']"), False)
+check(declaration("SECRET_FILES", "['.ssh']") + declaration("API_KEY", repr(provider_value)), False)
+for separator in ("\r", "\v", "\f", "\x85", "\u2028"):
+    check(declaration("SECRET_FILES", "['.ssh']" + separator + declaration("API_KEY", repr("opaque-material-49a8")).rstrip("\n")), False)
+
+# An enclosing mapping/call permits implicit continuation after a literal that
+# parses by itself. Check the complete RHS, not just its first physical line.
+for suffix in ("+ ['opaque-material-49a8']", "or ['opaque-material-49a8']",
+               "if condition else ['opaque-material-49a8']", "[0]", ".copy()", "()"):
+    for lead, middle, end in (("settings = {\n", '    "SECRET_FILES": ', "\n}\n"),
+                             ("settings = build(\n", "    SECRET_FILES = ", "\n)\n")):
+        source = lead + middle + "['.ssh']\n        " + suffix + end
+        check(source, False)
+        check("diff --git a/policy.py b/policy.py\n" + "\n".join("+" + line for line in source.splitlines()), False, "diff")
+check('settings = {\n    "SECRET_FILES": [".ssh"]\n}\n', True)
+check('settings = build(\n    SECRET_FILES = [".ssh"]\n)\n', True)
+for separator in ("\r", "\v", "\f", "\x00", "\x85", "\u2028", "\u2029"):
+    source = ('settings = {\n    "SECRET_FILES": [".ssh"]\n    # note' + separator
+              + '    + ["opaque-material-49a8"]\n}\n')
+    check(source, False)
+    # Preserve embedded separators instead of normalizing them via splitlines.
+    check("diff --git a/policy.py b/policy.py\n" + "\n".join("+" + line for line in source.rstrip("\n").split("\n")), False, "diff")
+check(declaration("SECRET_FILES", "['.ssh']") + "\n" * 130 + "+ ['opaque-material-49a8']", False)
+check("+" + declaration("SECRET_FILES", "['.ssh']") + " unchanged context", False, "diff")
+
+# Omitted context/hunk boundaries must not become a false complete collection.
+# Actual added blank lines, tested above, remain supported.
+for boundary in ("    '.ssh',", "@@ -20,1 +20,1 @@", "-    '.ssh',"):
+    source = "diff --git a/policy.py b/policy.py\n+" + declaration("SECRET_FILES", "{").rstrip("\n")
+    check(source + "\n" + boundary + "\n+}\n", False, "diff")
+
+print(f"ok: bounded path-metadata collections ({count} acceptance/refusal cases)")
+PY
+
 for _ in $(seq 1 10); do printf '%s=%s\n' "$key_name" "$token"; done >"$TMP/art/many.md"
 rc=0
 diagnostic=$(printf 'Review.' | "${SCAN_OUT[@]}" "$TMP/art/many.md" 2>&1 >/dev/null) || rc=$?

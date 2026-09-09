@@ -18,16 +18,24 @@ Modes:
 
 Exit codes: 0 accepted, 2 rejected or malformed input, 64 usage. Diagnostics
 name the rule and line, never the matched bytes.
+
+Credential-like assignments can also describe path inventories. Only a
+metadata-shaped name and a bounded, complete, flat literal collection of
+recognized path/glob descriptors qualify for that exception. Unknown, computed,
+nested, commented or incomplete collections still refuse; no source is executed.
+Provider/key detectors continue scanning the entire payload independently.
 """
 
 from __future__ import annotations
 
+import ast
 import bisect
 import os
 import re
 import shlex
 import stat
 import sys
+import warnings
 from dataclasses import dataclass
 
 REQUEST_MAX = 256 * 1024
@@ -208,6 +216,114 @@ def decode_text(label: str, data: bytes) -> str:
         reject(label, "non-UTF-8 content")
 
 
+def metadata_path(value: object) -> bool:
+    """Recognize descriptors, not arbitrary strings or credential values."""
+    if not isinstance(value, str) or re.fullmatch(r"[A-Za-z0-9_./~*?\[\]!-]{1,256}", value) is None:
+        return False
+    # Literal escapes/adjacent strings are decoded by the AST. A credential
+    # must not acquire an exception merely by appearing within a path.
+    if any(pattern.search(value) for pattern in
+           (PATTERN_ENVELOPE, PATTERN_PROVIDER_A, PATTERN_PROVIDER_B, PATTERN_PROVIDER_C, PATTERN_CLOUD_ID)):
+        return False
+    return sensitive_path(value) or value in {".envrc", ".credentials.json"} or re.fullmatch(
+        r"(?:~/)?\.[A-Za-z0-9_-]+(?:/[A-Za-z0-9_.-]+)*/config\.(?:jsonc?|ya?ml|toml)", value
+    ) is not None
+
+
+def collection_terminated(lines: list[str], index: int, marker: str | None, truncated: bool) -> bool:
+    """A valid literal prefix is not enough inside a mapping/call's brackets.
+
+    Require EOF, a closing outer delimiter or a clearly separate declaration.
+    Operators, call/index/attribute trailers, conditional/comprehension clauses,
+    omitted diff rows and other ambiguous continuations cannot close the RHS.
+    """
+    for number in range(index + 1, len(lines)):
+        if number >= 128:
+            return False
+        line = lines[number]
+        # Python also ends comments at CR. Do not skip a whole LF-delimited
+        # comment row that can conceal code after another control separator.
+        if re.search(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\u2028\u2029]", line):
+            return False
+        if not line and number == len(lines) - 1 and not truncated:
+            return True
+        if marker:
+            if line.startswith("diff --git "):
+                return True
+            if not line.startswith((marker, " ")):
+                return False
+            line = line[1:]
+        following = line.strip()
+        if not following or following.startswith("#"):
+            continue
+        if following[0] in ")]},":
+            return True
+        return re.match(
+            r'''(?:["']?[A-Za-z_][A-Za-z0-9_]*["']?\s*[:=](?!=)|(?:def|class|import|from|return|pass|raise)\b)''',
+            following,
+        ) is not None
+    return not truncated
+
+
+def safe_path_collection(text: str, match: re.Match) -> bool:
+    """Check the entire literal RHS, preserving raw/diff boundaries.
+
+    No eval/literal_eval, bare-container exemption or source-file exemption.
+    The AST is bounded to 16,384 source characters, 128 physical lines and 256 items;
+    only flat list/tuple/set string values (or an empty mapping) are accepted.
+    Diff additions may use their own prefix or explicit context, never an
+    opposite-image line or an omitted-line barrier.
+    """
+    prefix = text[match.start():match.start(1)]
+    name = re.search(r'''([A-Za-z0-9_]+)["']?\s*[:=]\s*$''', prefix)
+    if not name or not re.search(r"_(?:DIRS|DIRECTORIES|FILES|FILENAMES|GLOBS|PATHS|PATTERNS|SUFFIXES|TREES)$", name[1], re.I):
+        return False
+    start = match.start(1)
+    if text[start:start + 1] not in ("[", "(", "{"):
+        return False
+    marker = prefix.lstrip(" \t")[:1]
+    marker = marker if marker in ("+", "-") else None
+    snippet = text[start:start + 16385]
+    # Match the assignment regexp's LF boundaries. splitlines() also splits
+    # CR/vertical-tab/Unicode separators and could hide a suffix still captured
+    # as part of this assignment's RHS.
+    parts = snippet.split("\n")
+    lines = [part + ("\n" if index < len(parts) - 1 else "") for index, part in enumerate(parts)]
+    truncated = start + len(snippet) < len(text)
+    source = ""
+    for number, line in enumerate(lines):
+        if number >= 128:
+            return False
+        if number == len(lines) - 1 and truncated and not line.endswith("\n"):
+            return False
+        if number and marker:
+            if not line.startswith((marker, " ")):
+                return False
+            line = line[1:]
+        if number and PATTERN_ASSIGNMENT.match(line):
+            return False
+        source += line
+        if len(source) > 16384 or "#" in source:
+            return False
+        try:
+            # Compiler warnings can quote untrusted source (for example an
+            # invalid escape). Diagnostics must never disclose rejected bytes.
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                node = ast.parse(source, mode="eval").body
+        except SyntaxError:
+            continue
+        except (ValueError, RecursionError, MemoryError):
+            return False
+        if isinstance(node, ast.Dict) and not node.keys:
+            return collection_terminated(lines, number, marker, truncated)
+        if not isinstance(node, (ast.List, ast.Tuple, ast.Set)) or len(node.elts) > 256:
+            return False
+        return (all(isinstance(item, ast.Constant) and metadata_path(item.value) for item in node.elts)
+                and collection_terminated(lines, number, marker, truncated))
+    return False
+
+
 def content_findings(label: str, text: str, check_paths: bool) -> list[Finding]:
     newline_offsets = [match.start() for match in re.finditer("\n", text)]
 
@@ -240,7 +356,7 @@ def content_findings(label: str, text: str, check_paths: bool) -> list[Finding]:
         for match in pattern.finditer(text):
             findings.append(Finding(label, line_number(match.start()), rule))
     for match in PATTERN_ASSIGNMENT.finditer(text):
-        if not safe_assignment_value(match.group(1)):
+        if not safe_assignment_value(match.group(1)) and not safe_path_collection(text, match):
             findings.append(Finding(label, line_number(match.start()), "credential-assignment-v1"))
     for match in PATTERN_URL_CREDENTIAL.finditer(text):
         if not safe_assignment_value(match.group(1)):
@@ -370,9 +486,13 @@ def scan_stream(label: str, check_paths: bool) -> None:
     if check_paths:
         # A diff exposes only its headers and added lines; removed and context
         # lines already exist in the base.
+        # A bare # is an omission barrier, distinct from an added +# comment or
+        # an actual EOF. Never join additions across missing context or hunks.
+        lines = text.split("\n")
         text = "\n".join(
-            line for line in text.split("\n")
-            if line.startswith(("+", "diff ", "--- ", "rename ", "copy "))
+            line if line.startswith(("+", "diff ", "--- ", "rename ", "copy "))
+            or (number == len(lines) - 1 and not line) else "#"
+            for number, line in enumerate(lines)
         )
     enforce(content_findings(label, text, check_paths))
 
