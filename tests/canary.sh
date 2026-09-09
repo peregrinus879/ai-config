@@ -31,7 +31,7 @@ fail() {
   exit 1
 }
 
-# One shim serves all three tools: it finds the prompt and the repository the
+# One shim serves all four tools: it finds the prompt and the repository the
 # canary named, then answers as the mode says.
 cat >"$SHIMS/shim" <<'SHIM'
 #!/usr/bin/env bash
@@ -39,6 +39,9 @@ set -euo pipefail
 dir=$PWD
 out=""
 prompt=""
+if [[ ${0##*/} == hermes ]]; then
+  [[ $# == 7 && $1 == --cli && $2 == chat && $3 == --source && $4 == tool && $5 == --quiet && $6 == --query ]] || exit 9
+fi
 while (($#)); do
   case $1 in
     -C|--dir) dir=$2; shift 2 ;;
@@ -89,7 +92,7 @@ reply() {
 if [[ -n $out ]]; then reply >"$out"; else reply; fi
 SHIM
 chmod +x "$SHIMS/shim"
-for tool in claude codex opencode; do ln -s shim "$SHIMS/$tool"; done
+for tool in claude codex opencode hermes; do ln -s shim "$SHIMS/$tool"; done
 
 run_canary() { # mode tools
   CANARY_RC=0
@@ -101,9 +104,9 @@ expect() { # rc pattern message
   if ! { [[ $CANARY_RC == "$1" ]] && grep -q -- "$2" "$TMP/out"; }; then fail "$3: $(<"$TMP/out") $(<"$TMP/err")"; fi
 }
 
-run_canary ok "claude codex opencode"
+run_canary ok "claude codex opencode hermes"
 expect 2 '^incomplete: canary' "canary did not distinguish interactive-only reads"
-[[ $(grep -c '^ok ' "$TMP/out") == 17 ]] || fail "canary did not report seventeen completed checks: $(<"$TMP/out")"
+[[ $(grep -c '^ok ' "$TMP/out") == 23 ]] || fail "canary did not report twenty-three completed checks: $(<"$TMP/out")"
 grep -q '^ok     opencode  system' "$TMP/out" || fail 'OpenCode preapproved system check did not run'
 grep -q '^SKIP   opencode  temp' "$TMP/out" || fail 'OpenCode external temp check did not stay interactive'
 for mode in system-failure system-empty; do
@@ -112,6 +115,20 @@ for mode in system-failure system-empty; do
 done
 run_canary ok "claude codex"
 expect 0 '^ok:   canary' "fully checked tools did not pass"
+run_canary ok hermes
+expect 0 '^ok:   canary' 'Hermes normal-policy query did not pass'
+for flag in HERMES_YOLO_MODE HERMES_SAFE_MODE HERMES_IGNORE_RULES HERMES_IGNORE_USER_CONFIG; do
+  for value in 1 0 false ''; do
+    (export "$flag=$value"; run_canary ok hermes
+      expect 2 '^SKIP   hermes.*inherited bypass' "Hermes inherited $flag was not reported")
+  done
+done
+HERMES_HOME="$TMP/alternate-profile" run_canary ok hermes
+expect 2 '^SKIP   hermes.*alternate profile' 'Hermes alternate profile was not reported'
+HERMES_HOME='' run_canary ok hermes
+expect 2 '^SKIP   hermes.*alternate profile' 'Hermes empty profile override was not reported'
+HERMES_HOME="$HOME/.hermes" run_canary ok hermes
+expect 0 '^ok:   canary' 'Hermes explicit default profile did not pass'
 
 run_canary leak claude
 expect 1 '^FAIL   claude    secret' "canary missed an echoed marker"
@@ -130,7 +147,7 @@ expect 2 '^UNVER  opencode  gate' "canary did not report a decline as unverified
 run_canary ok "claude nosuchtool"
 expect 2 '^SKIP   nosuchtool all' "canary did not report a missing tool as incomplete"
 
-for tool in claude codex opencode; do
+for tool in claude codex opencode hermes; do
   for mode in empty failure timeout whitespace; do
     run_canary "$mode" "$tool"
     expect 1 "^FAIL   $tool.*secret" "canary passed a $mode credential call for $tool"

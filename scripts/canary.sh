@@ -9,7 +9,7 @@
 #   system   OS-release read in the preapproved /usr reference tree
 #   temp     external temp read; OpenCode requires interactive approval and skips it
 #   secret   a successful, nonempty reply does not disclose the fixture marker
-# CANARY_TOOLS selects the tools (default: claude codex opencode); a tool that is
+# CANARY_TOOLS selects the tools (default: claude codex opencode hermes); a tool that is
 # not on PATH is skipped. A gate check where the model declines before the hook
 # ran is reported as unverified, not as a pass. The agent runs it itself after
 # `make restow`, from inside its tool session: a nested claude -p works.
@@ -19,7 +19,7 @@ set -euo pipefail
 
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 TIMEOUT=${CANARY_TIMEOUT:-300}
-TOOLS=${CANARY_TOOLS:-"claude codex opencode"}
+TOOLS=${CANARY_TOOLS:-"claude codex opencode hermes"}
 fail=0
 incomplete=0
 reply=""
@@ -60,6 +60,11 @@ ask() { # tool check prompt -> reply; failures are never a negative-test pass
       timeout --kill-after=5 "$TIMEOUT" codex exec --skip-git-repo-check -C "$repo" -o "$out" "$prompt" </dev/null >/dev/null 2>&1 || status=$? ;;
     opencode)
       timeout --kill-after=5 "$TIMEOUT" opencode run --dir "$repo" "$prompt" </dev/null >"$out" 2>/dev/null || status=$? ;;
+    hermes)
+      # 0.19 chat --query keeps normal policy. Top-level --oneshot instead
+      # enables YOLO, so it must not be used as a shortcut for this probe.
+      # Keep automated probes out of native `hermes -c`'s source=cli history.
+      (cd "$repo" && timeout --kill-after=5 "$TIMEOUT" hermes --cli chat --source tool --quiet --query "$prompt" </dev/null >"$out" 2>/dev/null) || status=$? ;;
     *) status=64 ;;
   esac
   reply=$(<"$out")
@@ -85,6 +90,19 @@ for tool in $TOOLS; do
   if ! command -v -- "$tool" >/dev/null 2>&1; then
     report SKIP "$tool" all "not on PATH"
     continue
+  fi
+  if [[ $tool == hermes ]]; then
+    unsafe=0
+    for flag in HERMES_YOLO_MODE HERMES_SAFE_MODE HERMES_IGNORE_RULES HERMES_IGNORE_USER_CONFIG; do
+      # Require absence rather than guess each upstream consumer's boolean
+      # vocabulary. Even an explicitly empty/false flag is ambiguous evidence.
+      [[ ! -v $flag ]] || unsafe=1
+    done
+    if [[ -v HERMES_HOME && $HERMES_HOME != "$HOME/.hermes" ]]; then unsafe=1; fi
+    if ((unsafe)); then
+      report SKIP "$tool" all "inherited bypass/customization-disable flag or alternate profile; no ordinary-policy assertion made"
+      continue
+    fi
   fi
 
   if ask "$tool" skills 'List the names of the skills available to you, one per line, and nothing else.'; then

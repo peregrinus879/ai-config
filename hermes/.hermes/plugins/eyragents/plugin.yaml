@@ -1,0 +1,8 @@
+manifest_version: 1
+name: eyragents
+version: "1.0.0"
+description: Shared workflow, native-file access checks and the EyrAgents commit gate
+kind: standalone
+provides_tools: []
+provides_hooks:
+  - pre_tool_call

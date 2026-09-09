@@ -46,8 +46,8 @@ repository_root=$(realpath -e -- "$script_dir/..") || abort 'cannot resolve repo
 [[ -n ${HOME:-} && -d $HOME ]] || abort 'HOME must name an existing non-root directory'
 HOME=$(realpath -e -- "$HOME") || abort 'cannot resolve HOME'
 [[ $HOME != / ]] || abort 'HOME must name an existing non-root directory'
-PACKAGES=(agents claude-code codex opencode)
-TARGET_ROOTS=("$HOME/.claude" "$HOME/.codex" "$HOME/.agents" "$HOME/.local/bin" "$HOME/.config/opencode")
+PACKAGES=(agents claude-code codex opencode hermes)
+TARGET_ROOTS=("$HOME/.claude" "$HOME/.codex" "$HOME/.agents" "$HOME/.local/bin" "$HOME/.config/opencode" "$HOME/.hermes/plugins")
 # Package entries that once existed: links into them are still ours to clean.
 RETIRED_ENTRIES=(agents/.local codex/.agents claude-code/.claude/rules opencode/.config/opencode/skills)
 
@@ -266,7 +266,7 @@ unlink_skills() {
 
 [[ $# -le 1 ]] || abort "unsupported arguments: $*"
 case ${1:-} in
-  ''|--require-clone|--check-skills|--install-gate|--check-gate|--migrate-codex-config|--link-skills|--unlink-skills) ;;
+  ''|--require-clone|--check-skills|--install-gate|--check-gate|--migrate-codex-config|--migrate-hermes-config|--link-skills|--unlink-skills) ;;
   *) abort "unsupported arguments: $*" ;;
 esac
 require_clone
@@ -276,6 +276,8 @@ case ${1:-} in
   --check-skills) check_skills ;;
   --install-gate) manage_gate install ;;
   --check-gate) manage_gate check ;;
+  --migrate-hermes-config)
+    python3 "$repository_root/scripts/reconcile-hermes-config.py" install "$repository_root" ;;
   --migrate-codex-config)
     [[ $# == 1 ]] || abort "unsupported arguments: $*"
     migrate_codex_config ;;

@@ -1,0 +1,39 @@
+# Managed leaves for the Omarchy/mise Hermes Agent 0.19 interface.
+# Reconciled into a private host-local config.yaml, never stowed directly.
+# Other host settings, external skill libraries and enabled plugins survive.
+model:
+  provider: openai-codex
+  default: gpt-6-astra
+  openai_runtime: auto
+agent:
+  reasoning_effort: xhigh
+  coding_context: auto
+  environment_hint: |
+    @eyragents-guidance@
+
+    Hermes project skills: version 0.19 discovers its local and configured
+    external skill libraries, not project .agents/skills automatically. When
+    project instructions reference a project skill, read that SKILL.md with
+    the native file tool and follow it within the same authorization boundary.
+terminal:
+  backend: local
+  cwd: "."
+  home_mode: auto
+approvals:
+  mode: smart
+  cron_mode: deny
+hooks_auto_accept: false
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+  write_approval: false
+skills:
+  external_dirs:
+    - ~/.agents/skills
+  inline_shell: false
+  write_approval: false
+curator:
+  enabled: true
+plugins:
+  enabled:
+    - eyragents

@@ -149,7 +149,7 @@ def sensitive_path(value: str) -> bool:
     return any(sensitive_component(part) for part in path.split("/")) or any(
         "/" + store + "/" in path for store in (
             ".config/bravesoftware", ".config/chromium", ".local/share/keyrings",
-            ".claude/.credentials.json", ".config/gh/hosts.yml", ".docker/config.json",
+            ".claude/.credentials.json", ".config/gh/hosts.yml", ".docker/config.json", ".hermes/config.yaml",
         )
     )
 

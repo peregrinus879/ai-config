@@ -4,9 +4,9 @@
 # a real directory and only leaf files are links.
 
 SHELL := /bin/bash
-PACKAGES := agents claude-code codex opencode
+PACKAGES := agents claude-code codex opencode hermes
 STOW := stow --no-folding --ignore='__pycache__' -t ~
-TOOL_PACKAGES := claude-code codex opencode
+TOOL_PACKAGES := claude-code codex opencode hermes
 # Each skill under ~/.agents/skills deploys as one directory link, which Codex's
 # loader follows where it skips file links; Stow leaves that directory to
 # scripts/prepare-stow.sh --link-skills.
@@ -16,23 +16,24 @@ SHELLCHECK_FILES := claude-code/.claude/statusline.sh \
   $(filter-out %/spar-payload-scan %.py,$(wildcard agents/.agents/skills/*/scripts/*)) \
   $(wildcard scripts/*.sh tests/*.sh)
 
-.PHONY: help stow unstow dry-run restow require-clone check-skills install-gate migrate-codex-config lint test check verify-deploy verify canary clean
+.PHONY: help stow unstow dry-run restow require-clone check-skills install-gate migrate-codex-config migrate-hermes-config lint test check verify-deploy verify canary clean
 
 # Deployment goals and their guards must never race, including `make -j clean restow`.
 .NOTPARALLEL:
 
 help:
 	@echo "Targets:"
-	@echo "  stow           Clean dangling links, stow all packages into ~, link each skill directory, install the commit gate, reconcile the Codex config"
+	@echo "  stow           Clean dangling links, stow packages, link skills, install the gate, reconcile Codex and Hermes configs"
 	@echo "  unstow         Remove all package links and the skill directory links"
 	@echo "  dry-run        Preview Stow actions"
-	@echo "  restow         Guard, preflight skills, clean, refresh links, install the gate, and reconcile Codex config"
+	@echo "  restow         Guard, preflight skills, clean, refresh links, install the gate, reconcile Codex and Hermes configs"
 	@echo "  check-skills   Read-only preflight of every managed skill directory"
 	@echo "  install-gate   Install templates/hooks/commit-gate as a real file under ~/.agents/hooks"
 	@echo "  migrate-codex-config  Reconcile ~/.codex/config.toml with the template, keeping host tables"
+	@echo "  migrate-hermes-config Reconcile private ~/.hermes/config.yaml and compose shared guidance"
 	@echo "  lint           ShellCheck, Python, and plugin syntax checks over managed scripts"
 	@echo "  test           Fast tests: configuration boundaries, bridges, statusline, preparation, commit gate"
-	@echo "  check          Repository checks: package and project symlinks resolve, owned JSON and TOML parse, then test (runs in CI)"
+	@echo "  check          Repository checks: links, JSON/TOML, Hermes YAML/policy and fixture tests (runs in CI)"
 	@echo "  verify-deploy  Check every package file resolves to its deployed target"
 	@echo "  verify         lint, check, and verify-deploy"
 	@echo "  canary         Up to six live calls per tool; interactive-only OpenCode checks reported separately (not a gate)"
@@ -44,6 +45,7 @@ stow: clean
 	bash scripts/prepare-stow.sh --link-skills
 	$(MAKE) --no-print-directory install-gate
 	bash scripts/prepare-stow.sh --migrate-codex-config
+	bash scripts/prepare-stow.sh --migrate-hermes-config
 
 unstow: require-clone check-skills
 	$(STOW) -D -v $(TOOL_PACKAGES)
@@ -60,6 +62,7 @@ restow: clean
 	bash scripts/prepare-stow.sh --link-skills
 	$(MAKE) --no-print-directory install-gate
 	bash scripts/prepare-stow.sh --migrate-codex-config
+	bash scripts/prepare-stow.sh --migrate-hermes-config
 
 # The hook runs outside the Codex sandbox, so its executable lives outside
 # every workspace as a real file the sandboxed agent cannot write.
@@ -80,16 +83,22 @@ check-skills: require-clone
 migrate-codex-config: require-clone
 	bash scripts/prepare-stow.sh --migrate-codex-config
 
+migrate-hermes-config: require-clone
+	bash scripts/prepare-stow.sh --migrate-hermes-config
+
 lint:
 	shellcheck -s bash $(SHELLCHECK_FILES)
 	python3 -I -c 'import sys; [compile(open(p, "rb").read(), p, "exec") for p in sys.argv[1:]]' \
-	  agents/.agents/skills/spar/scripts/spar-payload-scan scripts/reconcile-codex-config.py tests/config-contracts.py \
+	  agents/.agents/skills/spar/scripts/spar-payload-scan scripts/reconcile-codex-config.py scripts/reconcile-hermes-config.py \
+	  hermes/.hermes/plugins/eyragents/__init__.py tests/hermes.py tests/hermes-runtime.py tests/hermes-live.py tests/hermes-live-fixtures.py tests/config-contracts.py \
 	  agents/.agents/skills/commit/scripts/governance.py tests/commit-governance.py
 	@set -e; for plugin in opencode/.config/opencode/plugins/*.js; do node --check "$$plugin"; done
 	@echo "ok:   lint"
 
 test:
 	python3 tests/config-contracts.py
+	python3 tests/hermes.py
+	python3 tests/hermes-live-fixtures.py
 	bash tests/statusline.sh
 	bash tests/prepare-stow.sh
 	bash tests/reconcile-codex.sh
@@ -124,6 +133,7 @@ check:
 # files, so they are skipped.
 verify-deploy:
 	@bash scripts/prepare-stow.sh --check-gate
+	@python3 scripts/reconcile-hermes-config.py check "$(CURDIR)"
 	@fail=0; \
 	while IFS= read -r -d '' src; do \
 	  [[ "$$src" == */.gitignore ]] && continue; \

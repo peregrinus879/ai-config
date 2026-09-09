@@ -1,6 +1,6 @@
 # Access Policy
 
-The comparison point for Claude Code, Codex, and OpenCode: intended authorization, implemented access, rationale, upstream semantics, and evidence. Read this before reconstructing permissions from individual files. [`AGENTS.md`](../AGENTS.md) owns invariants, [shared guidance](../agents/.agents/shared-guidance.md#safety) owns authorization, the linked configurations implement it, and [`maintenance.md`](maintenance.md) owns unresolved gaps and live revalidation evidence. [`/eyrsync`](../.agents/skills/eyrsync/SKILL.md#access-reconciliation) keeps these views aligned.
+The comparison point for Claude Code, Codex, OpenCode, and Hermes Agent: intended authorization, implemented access, rationale, upstream semantics, and evidence. Read this before reconstructing permissions from individual files. [`AGENTS.md`](../AGENTS.md) owns invariants, [shared guidance](../agents/.agents/shared-guidance.md#safety) owns authorization, the linked configurations implement it, and [`maintenance.md`](maintenance.md) owns unresolved gaps and live revalidation evidence. [`/eyrsync`](../.agents/skills/eyrsync/SKILL.md#access-reconciliation) keeps these views aligned.
 
 ## Reading The Matrices
 
@@ -11,7 +11,7 @@ These are **configured baseline capabilities, not permission to use them**. They
 | Allow | The described tool/profile permits this operation without a new permission decision, subject to exceptions below. |
 | Auto | Claude Code's permissive auto-mode read default, not an explicit path allow. The first external-read choice can change it. |
 | Review | Claude Code's classifier evaluates the action; this is neither automatic permission nor a guaranteed human prompt. |
-| Ask | OpenCode requests approval for the applicable directory and/or edit subject. |
+| Ask | The tool requests native approval for the applicable subject; retained decisions and bypass modes remain tool-specific. |
 | Block | A native deny or baseline sandbox restriction applies to the described surface, not necessarily every other tool surface. |
 | Guarded | The managed OpenCode scratch plugin permits supported native edits only after its policy/filesystem checks. |
 | M | OpenCode's native [move-destination exception](#move-destinations): a destination can miss the edit permission check. |
@@ -30,8 +30,10 @@ External columns are outside the active workspace. A sibling is not a writable w
 | Codex | Write | Allow, except protected | Block | Block | Block | Block | Block | Block |
 | [OpenCode](#opencode) | Read | Allow | Ask | Allow | Allow | Ask | Allow | Block |
 | OpenCode | Write (M) | Allow, except protected | Ask | Ask | Ask | Ask | Ask | Block |
+| [Hermes Agent](#hermes-agent) | Read | Allow | Allow | Allow | Allow | Ask outside standing roots | Allow | Block |
+| Hermes Agent | Write | Allow, except protected | Ask | Ask | Ask | Ask | Block through deployed path | Block |
 
-Codex also reads specifically named harness files, `~/.config/opencode`, `~/.local/bin`, and `~/.local/share/mise`; its [template](../templates/codex/config.toml) is the exact inventory. It has no model-facing read grant on `~/.codex/config.toml`. The client loading its own configuration or authentication is not permission for the agent to display it. All three can execute authorized skill scripts through their ordinary shell controls; a filesystem read grant does not mean a script is harmless or read-only when executed.
+Codex also reads specifically named harness files, `~/.config/opencode`, `~/.local/bin`, and `~/.local/share/mise`; its [template](../templates/codex/config.toml) is the exact inventory. It has no model-facing read grant on `~/.codex/config.toml`. The client loading its own configuration or authentication is not permission for the agent to display it. All four can execute authorized skill scripts through their ordinary shell controls; a filesystem read grant does not mean a script is harmless or read-only when executed.
 
 Quarry is the shared reference-clone root for H and skills, not scratch to discard. [Shared guidance](../agents/.agents/shared-guidance.md#safety) authorizes needed routine fetch/fast-forward refreshes of existing clones declared in the family's `references.txt`, preserving local work and refs. Those shell operations are distinct from native file-write cells: Claude Code's classifier and OpenCode's command controls still apply; Codex's ordinary profile cannot perform the external writes/network and must report that boundary. `/eyrsync` checks the family updater's dry-run before a refresh because `make refs` can also create clones or repoint remotes, effects requiring separate authorization. No clone deletion, force update, arbitrary reference-source edit or sandbox bypass follows from the location grant.
 
@@ -45,6 +47,8 @@ Quarry is the shared reference-clone root for H and skills, not scratch to disca
 | Codex | Write | Block | Block | Block | Block | Block | Block |
 | OpenCode | Read | Allow | Ask | Ask | Ask | Allow | Ask |
 | OpenCode | Write (M) | Ask | Ask | Ask | Ask | Ask | Ask |
+| Hermes Agent | Read | Allow | Allow | Allow | Allow | Allow | Ask |
+| Hermes Agent | Write | Ask | Ask | Ask | Ask | Ask | Ask |
 
 Codex's `:minimal` additionally supplies platform/runtime access, not a fixed universal file list or a grant on the entire machine. On the checked Linux implementation it includes existing executable/library roots and `/etc`; a sandbox-local `/proc` is also normally mounted. Do not infer that all `/proc`, `/run`, or `/dev` host resources are either readable or absent from the simplified directory table. Native Windows and other sandbox backends need their own verification.
 
@@ -60,6 +64,8 @@ These cells describe ordinary non-secret files, not permission to inspect anothe
 | Codex | Write | Allow | Block unless also writable temp/workspace | Allow when set | Block | Block |
 | OpenCode | Read | Ask | Ask | Containing-path rule | Allow | Block |
 | OpenCode | Write (M) | Ask | Ask | Containing-path rule | Guarded | Block |
+| Hermes Agent | Read | Allow | Allow | Containing-path rule | Block | Block |
+| Hermes Agent | Write | Ask outside workspace | Ask outside workspace | Containing-path rule | Block | Block |
 
 Claude Code's Read allow on `/tmp` covers its own UID-specific tool root but does not establish ownership of every session there. OpenCode denies external `/tmp/claude-*/**`; Codex names only `/tmp/claude-1000`, so another UID is not covered by that literal. Codex's `:slash_tmp` and `:tmpdir` are broad write capabilities, whereas guidance authorizes only caller-owned session scratch. No persistent scratch write exception is configured for `~/Projects/scratch` in any tool.
 
@@ -75,6 +81,8 @@ The credential inventory includes named home stores and copied stores, provider 
 | Codex | Write | Block | Block for configured shapes | Block | Block | Follows location grant | Block at baseline |
 | OpenCode | Read | Block | Block | Block | Block | Block through native Read | Allow |
 | OpenCode | Write (M) | Block | Block | Block | Block | Block through native edit rules | Block |
+| Hermes Agent | Read | Block | Block | Block | Block | Block through native file checks | Allow |
+| Hermes Agent | Write | Block | Block | Block | Block | Block through native file checks | Block for literal `.git` paths |
 
 For Codex, workspace glob protection is bounded and applied to existing matches before command execution. General temp/system trees lack a global credential-shape mask; copied-store coverage outside `~/Projects` is not equivalent either. The `.npmrc` omission applies outside effective workspace roots, not to `~/.npmrc` or a workspace's `**/.npmrc`. These are **enforcement gaps, never authorization to access credentials**. Startup-scan failures and the revalidation trigger live in the [ledger](maintenance.md#active-limitations).
 
@@ -89,12 +97,14 @@ Filesystem reads and writes above are only one axis. Tool availability, local ex
 | Claude Code | Read path rules and mode | Best-effort Read-policy coverage; checks resolved search directory | `Edit(path)` covers Edit, Write, NotebookEdit; matching Read denies also block Edit/Write | Read-only built-ins/narrow allows, otherwise Review; file/redirect checks have version-dependent coverage pending ledger revalidation; arbitrary subprocess I/O is not contained |
 | Codex | Local filesystem profile where supported | Local searches run under the sandbox profile | Writable-root/profile checks, protected metadata and approval boundary | Allow inside the sandbox; eligible boundary crossings go to auto-review, not a universal per-command review |
 | OpenCode | `read` subject plus external-directory check | Pattern and directory checks, **no per-result Read filtering** | Shared `edit` permission plus external-directory check, except move-destination edit gap (M); managed scratch adds preflight | `bash.* = allow` with named asks/denies; recognized file commands check directories, not per-file Read/Edit; arbitrary scripts are unconfined |
+| Hermes Agent | Managed task-aware path checks plus native guards | Root checks and additive native result-path filtering, after backend traversal | Every parsed native target checked; task-relative operands normalized before dispatch | Native smart review plus terminal commit gate; arbitrary Python/scripts and process stdin remain outside lexical enforcement |
 
 | Tool | Hosted Web Reads | Shell Network Reads / Writes | MCP, Apps, Browser, Plugins | In-Tool Auditor | Sharing / Remote Control |
 | --- | --- | --- | --- | --- | --- |
 | Claude Code | Available through auto-mode/tool rules; no tracked domain allowlist | No tracked network sandbox; command rules/classifier apply | No blanket disable; loaded components have their own approval/execution surfaces | Read, Grep, Glob only; parent restrictions retained | Off by guidance; no blanket tracked feature disable |
 | Codex | `web_search = "live"` | Block at baseline | Separate from command sandbox; apps/browser/plugin availability and permissions depend on product and loaded configuration | Not configured; full-authority verification deferred | Off by guidance; no blanket tracked feature disable |
 | OpenCode | `webfetch` and `websearch` Allow | No network sandbox; command rules apply | Primary has no blanket unknown-tool/MCP deny; plugins/custom tools can execute code | Read and Glob only; tighter final-parent-policy intersection | `share = "disabled"`; other remote-control surfaces stay off by guidance |
+| Hermes Agent | Native web tools retained; provider/dependency setup required | No network sandbox; native command review and managed gate apply | Native capabilities retained; each configured integration has its own authority | Not configured | Off by shared guidance; no connector/service is activated by deployment |
 
 Web reads still send queries/URLs to a service. Network-enabled does not authorize uploads or remote mutations. No host connector inventory or account permissions are inferred here. Model-provider requests, client configuration loading, inherited environment values, hooks, plugins, and browser/app integrations are not all governed by a local filesystem profile. A native path deny does not sanitize an environment variable or every returned tool result.
 
@@ -105,6 +115,7 @@ Web reads still send queries/URLs to a service. Network-enabled does not authori
 | Claude Code | No blanket agent/workflow deny; parent permissions and agent-specific controls apply | No blanket client deny; command rules/classifier apply | Approved `spar-codex` bridge has fixed read-only flags |
 | Codex | Parent sandbox/approval controls apply; no configured read-only auditor | No named client deny; runtime, state and network can remain unavailable inside the sandbox | Codex-to-Claude route remains H-run outside the strict profile |
 | OpenCode | `task` available; upstream depth 1 prevents delegates launching more delegates by default; auditor additionally denies Task | Named `claude *`, `codex *`, `opencode *` forms denied; exact version checks allowed, not a general process-containment rule | Approved `spar-claude` bridge is separate from direct client launches |
+| Hermes Agent | Native delegation retained; dispatched child tools receive the plugin, with Hermes's own child restrictions | No blanket nested-client disable; guidance and terminal controls apply | Shared `spar-claude` bridge for the Astra primary |
 
 Only the named auditor gets its special read-only cap. Do not infer those caps for general/explore agents, workflows, CLI subprocesses, or MCP-provided agents. The [spar skill](../agents/.agents/skills/spar/SKILL.md) owns bridge scope/consent; a bridge invocation is not authorization to launch an unrestricted client. Upstream [Claude subagents](https://code.claude.com/docs/en/sub-agents#permission-modes), [Codex subagents](https://developers.openai.com/codex/agent-configuration/subagents#approvals-and-sandbox-controls), and [OpenCode depth](https://opencode.ai/docs/config/#subagent-depth) define the relevant defaults.
 
@@ -115,6 +126,7 @@ Only the named auditor gets its special read-only cap. Do not infer those caps f
 | Claude Code | Block by dispatched Bash gate | Block named forms | Review; explicit target instruction required by policy | Review; explicit instruction required by policy | Block named forms |
 | Codex | Block by dispatched local-tool gate | Network block for push; no blanket `git clean` deny | Filesystem boundary where crossed; guidance still required inside it | Protected Git metadata and auto-review where crossed | Rejected by review policy; not a universal command-name deny |
 | OpenCode | Block by dispatched Bash gate | Block named forms | Ask named forms | Ask named forms | Block named forms |
+| Hermes Agent | Block by dispatched terminal gate | Block named forms | Native smart review plus explicit-instruction guidance | Native guards/review plus explicit-instruction guidance | Block named forms |
 
 The [commit gate](../templates/hooks/commit-gate) also blocks stash mutations, including `drop`/`clear`, despite any underlying Ask/Review rule. Its literal fast-forward-only merge/pull exemptions and stash list/show exceptions do not waive other restrictions. Recognized `gh` mutation denies differ: Claude Code's extra forms go through classifier prose; OpenCode additionally denies `gh api`, auth, repository creation/deletion, workflow dispatch and other listed forms. Codex has no matching command deny inventory; the sandbox, auto-review, gate and guidance are distinct layers.
 
@@ -158,6 +170,20 @@ The managed scratch plugin refuses moves involving its guarded `/tmp/opencode` t
 
 ## Decisions And Parity
 
+### Hermes Agent
+
+Implementation: [`templates/hermes/config.yaml`](../templates/hermes/config.yaml), the opaque [reconciler](../scripts/reconcile-hermes-config.py), and [`hermes/.hermes/plugins/eyragents`](../hermes/.hermes/plugins/eyragents/__init__.py). Checked interface: installed mise/PyPI **0.19.0**, 2026-09-09. [Upstream release](https://github.com/NousResearch/hermes-agent/releases/tag/v2026.7.20), [hooks](https://hermes-agent.nousresearch.com/docs/user-guide/features/hooks), [configuration](https://hermes-agent.nousresearch.com/docs/user-guide/configuration), and [skills](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills) provide public context; newer online interfaces do not supersede installed-source evidence.
+
+The general-purpose profile keeps native tools and learning. Shared guidance is a stable environment hint, not a replacement for `SOUL.md`; repository-owned skills are external libraries, and `skill_manage` may mutate only its own local skill targets. Hermes-local memory and skills are runtime-owned exceptions to the ordinary repository edit boundary. Native file writes to those locations still follow the file-tool approval path; their native learning tools use their own ownership rules.
+
+The plugin uses `pre_tool_call`, request middleware and a hard-denial execution backstop. Task-relative read/search/patch operands become absolute before v0.19's shared-environment backend can resolve them against another task's cwd. Every V4A operation, including both `Move File` endpoints, is checked. A narrow composition of `tools.file_tools.get_read_block_error` adds the credential predicate to native returned-search-path filtering. That happens after backend traversal; it is **not proof the backend never read a matching file**, and native counts/errors can disclose metadata. The model must still obey the secret-material rule.
+
+External native reads outside standing roots and writes outside the task's current repository request scoped Hermes approval. Its native approval system may retain decisions or bypass asks in YOLO mode; deployed `smart` mode is not YOLO. Protected native paths and terminal gate refusals are blocks, with an execution middleware backstop against an earlier plugin approval. Later hostile plugins, direct handler calls and client configuration can defeat these controls; safe mode or failed plugin import leaves upstream execution unguarded. Verify discovery and start a fresh session after changes.
+
+The local backend is **not a sandbox**. `execute_code` RPC calls to Hermes tools, normal delegated tools and permitted background-review tools reach normal dispatch. Direct Python I/O, subprocesses, shell scripts, native tool-internal subprocesses and bytes delivered to an existing interactive process do not become additional terminal-hook calls. Secret path checks do not sanitize arbitrary tool results or environments. Literal `.git` write denial is not protection for every separately located Git directory. Symlink/metadata races remain. Remote path semantics, alternate Codex app-server execution, and independently configured profiles need separate verification; unsupported remote native-path checks refuse rather than assume local protection.
+
+`~/.hermes/config.yaml` can contain provider/MCP credentials. Primary native policies, reviewer bridges and the payload scanner protect it; the deployment reconciler processes it opaquely and reports structural results. Session stores and other tools' temporary roots remain outside authorized research. These layers preserve shared intent with documented limits, not identical containment across tools.
+
 Parity means preserving the same authorized work and safety intent where each tool can enforce it, **not broadening the stricter tool until every cell matches**. A technical gap is not an approved exception. Material changes to access, oversight, or useful capabilities require H's decision; this document itself grants nothing.
 
 | Area | Decision And Rationale | Implementation / Current Difference | Status |
@@ -176,7 +202,7 @@ The durable rationale is [enforce, then instruct](design.md#enforce-then-instruc
 
 ## Evidence And Refresh
 
-The [eyrsync source table](../.agents/skills/eyrsync/SKILL.md#sources) owns the three-tool reference strategy: Codex/OpenCode client source and Claude Code's public release/support material, plus official docs and scoped runtime evidence for every tool. A maintained clone does not by itself make any matrix cell source-verified or live-verified. Version-specific docs/release disagreements, including Claude's Bash Read-rule reversals, stay explicit in the ledger until checked.
+The [eyrsync source table](../.agents/skills/eyrsync/SKILL.md#sources) owns the four-tool reference strategy: Codex/OpenCode/Hermes client source and Claude Code's public release/support material, plus official docs and scoped runtime evidence for every tool. A maintained clone does not by itself make any matrix cell source-verified or live-verified. Version-specific docs/release disagreements, including Claude's Bash Read-rule reversals, stay explicit in the ledger until checked.
 
 Source/configuration reconciliation checked **2026-09-06**. The installed mise inventory and latest stable public releases at that check agreed; this does not establish which binary or settings an already-running session loaded.
 
@@ -185,9 +211,10 @@ Source/configuration reconciliation checked **2026-09-06**. The installed mise i
 | Claude Code | 2026-09-06 | 2.1.263 | [2.1.263](https://github.com/anthropics/claude-code/releases/tag/v2.1.263) | Tracked config plus current official semantics; no fresh classifier/host-policy certification |
 | Codex | 2026-09-06 | 0.153.4 | [0.153.4](https://github.com/openai/codex/releases/tag/rust-v0.153.4) | Template plus official docs/release source; no host config or account inventory read |
 | OpenCode | 2026-09-06 | 1.18.29 | [1.18.29](https://github.com/anomalyco/opencode/releases/tag/v1.18.29) | Tracked config, plugins and permission call sites; post-restart quarry Read/Glob succeeded with H-confirmed no prompts, bounded live evidence in ledger |
+| Hermes Agent | 2026-09-09 | 0.19.0 through mise/PyPI | [PyPI 0.19.0](https://pypi.org/project/hermes-agent/0.19.0/); GitHub latest 0.21.1 is a different channel | Installed source and synthetic full-dispatch refusal before backend calls; live Astra status/replies, guidance/skills, reads, learning, explicit-ID resume, child-result delivery and approval timeout denial. Effective effort and WSL remain unknown; model refusal alone is not hook evidence |
 
-[`tests/config-contracts.py`](../tests/config-contracts.py) checks configured inventory and modeled path cases. [Auditor](../tests/opencode-auditor.sh) and [scratch](../tests/opencode-scratch.sh) tests check plugin transformations and fixtures. [Gate](../tests/commit-gate.sh) and [governance](../tests/commit-governance.py) tests cover their respective command/receipt boundaries. Passing these is not proof that all three upstream runtimes enforce every cell. [The canary](../scripts/canary.sh) is behavioral smoke; a model saying it refused a read is not independent denial evidence.
+[`tests/config-contracts.py`](../tests/config-contracts.py) checks configured inventory and modeled path cases. [Auditor](../tests/opencode-auditor.sh) and [scratch](../tests/opencode-scratch.sh) tests check plugin transformations and fixtures. [Gate](../tests/commit-gate.sh) and [governance](../tests/commit-governance.py) tests cover their respective command/receipt boundaries. Passing these is not proof that all four upstream runtimes enforce every cell. [The canary](../scripts/canary.sh) is behavioral smoke; a model saying it refused a read is not independent denial evidence.
 
 For actual effective access, account for configuration precedence, launch mode, workspace roots, `$TMPDIR`, session approvals, tool/plugin inventory, hook trust and host backend. Trusted project and CLI/session settings can change defaults; Codex legacy sandbox settings can select a different permission system. Use safe metadata and synthetic non-secret fixtures, not raw host configuration dumps, credentials, environment dumps, or other-tool session records. An unavailable check stays unknown.
 
-Every relevant `/eyrsync` pass reconciles **decision -> matrix -> implementation -> current official semantics -> verification evidence** for all three tools, with read and write kept distinct. Check release notes for changed matchers, defaults, scopes and newly exposed surfaces, not merely renamed keys. Update the current rows/source baseline only to the extent checked; keep per-tool older dates or explicit unknowns when a check is blocked. Preserve unresolved drift with an owner and concrete revalidation trigger in the ledger. Do not change policy just to make a matrix cell or canary green.
+Every relevant `/eyrsync` pass reconciles **decision -> matrix -> implementation -> current official semantics -> verification evidence** for all four tools, with read and write kept distinct. Check release notes for changed matchers, defaults, scopes and newly exposed surfaces, not merely renamed keys. Update the current rows/source baseline only to the extent checked; keep per-tool older dates or explicit unknowns when a check is blocked. Preserve unresolved drift with an owner and concrete revalidation trigger in the ledger. Do not change policy just to make a matrix cell or canary green.

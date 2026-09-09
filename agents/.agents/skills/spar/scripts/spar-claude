@@ -131,6 +131,7 @@ settings=$(jq -cn --arg repo "$repo" --arg home "$account_home" '
         "Read(/" + $home + "/.aws)", "Read(/" + $home + "/.aws/**)",
         "Read(/" + $home + "/.claude/.credentials.json)",
         "Read(/" + $home + "/.codex/auth.json)",
+        "Read(/" + $home + "/.hermes/config.yaml)",
         "Read(/" + $home + "/.config/gh/hosts.yml)",
         "Read(/" + $home + "/.docker/config.json)",
         "Read(/" + $home + "/.gnupg)", "Read(/" + $home + "/.gnupg/**)",
@@ -146,7 +147,7 @@ settings=$(jq -cn --arg repo "$repo" --arg home "$account_home" '
         "Read(/" + $repo + "/.git)", "Read(/" + $repo + "/.git/**)"
       ] + ([".aws", ".ssh", ".gnupg", ".kube", ".mozilla", ".config/BraveSoftware", ".config/chromium", ".local/share/keyrings"] |
         map(. as $store | ["./", "./**/"] | map("Read(" + . + $store + ")", "Read(" + . + $store + "/**)")) | flatten) +
-        ([".claude/.credentials.json", ".codex/auth.json", ".config/gh/hosts.yml", ".docker/config.json", ".local/share/opencode/auth.json", ".bash_history", ".zsh_history",
+        ([".claude/.credentials.json", ".codex/auth.json", ".config/gh/hosts.yml", ".docker/config.json", ".hermes/config.yaml", ".local/share/opencode/auth.json", ".bash_history", ".zsh_history",
           "*.key", "*.pem", "*.p12", "*.pfx", "credentials", "credentials.*", "auth.json", ".netrc", ".npmrc", ".pypirc", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"] |
         map(. as $store | ["./", "./**/"] | map("Read(" + . + $store + ")")) | flatten))
     }

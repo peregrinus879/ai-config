@@ -22,7 +22,7 @@ make_clone() {
     "$repo/claude-code/.claude/skills/spar/scripts" \
     "$repo/agents/.agents/skills/spar/scripts" "$repo/codex/.codex" \
     "$repo/opencode/.config/opencode" \
-    "$repo/scripts" "$repo/templates/codex" "$repo/templates/hooks"
+    "$repo/scripts" "$repo/templates/codex" "$repo/templates/hooks" "$repo/templates/hermes"
   printf 'tracked\n' >"$repo/claude-code/.claude/settings.json"
   printf 'guidance\n' >"$repo/agents/.agents/shared-guidance.md"
   printf 'skill\n' >"$repo/agents/.agents/skills/commit/SKILL.md"
@@ -42,6 +42,11 @@ make_clone() {
   printf '{}\n' >"$repo/opencode/.config/opencode/opencode.json"
   cp -- "$ROOT/scripts/prepare-stow.sh" "$repo/scripts/prepare-stow.sh"
   cp -- "$ROOT/scripts/reconcile-codex-config.py" "$repo/scripts/reconcile-codex-config.py"
+  cp -- "$ROOT/scripts/reconcile-hermes-config.py" "$repo/scripts/reconcile-hermes-config.py"
+  cp -- "$ROOT/templates/hermes/config.yaml" "$repo/templates/hermes/config.yaml"
+  mkdir -p "$repo/hermes/.hermes/plugins/eyragents"
+  cp -- "$ROOT/hermes/.hermes/plugins/eyragents/plugin.yaml" "$repo/hermes/.hermes/plugins/eyragents/plugin.yaml"
+  cp -- "$ROOT/hermes/.hermes/plugins/eyragents/__init__.py" "$repo/hermes/.hermes/plugins/eyragents/__init__.py"
   cp -- "$ROOT/templates/codex/config.toml" "$repo/templates/codex/config.toml"
   cp -- "$ROOT/templates/hooks/commit-gate" "$repo/templates/hooks/commit-gate"
   cp -- "$ROOT/Makefile" "$repo/Makefile"
@@ -59,12 +64,12 @@ print(data)' "$1" "$2"
 prepare() { HOME=$1 bash "$2/scripts/prepare-stow.sh"; }
 migrate() { HOME=$1 bash "$2/scripts/prepare-stow.sh" --migrate-codex-config; }
 deploy() {
-  HOME=$1 stow --no-folding -R -d "$2" -t "$1" claude-code codex opencode &&
+  HOME=$1 stow --no-folding -R -d "$2" -t "$1" claude-code codex opencode hermes &&
     HOME=$1 stow --no-folding --ignore='\.agents/skills' -R -d "$2" -t "$1" agents &&
     HOME=$1 bash "$2/scripts/prepare-stow.sh" --link-skills
 }
 undeploy() {
-  HOME=$1 stow --no-folding -D -d "$2" -t "$1" claude-code codex opencode &&
+  HOME=$1 stow --no-folding -D -d "$2" -t "$1" claude-code codex opencode hermes &&
     HOME=$1 stow --no-folding --ignore='\.agents/skills' -D -d "$2" -t "$1" agents &&
     HOME=$1 bash "$2/scripts/prepare-stow.sh" --unlink-skills
 }

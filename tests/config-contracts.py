@@ -38,6 +38,7 @@ CREDENTIAL_FILES = (
     "~/.codex/auth.json",
     "~/.config/gh/hosts.yml",
     "~/.docker/config.json",
+    "~/.hermes/config.yaml",
     "~/.local/share/opencode/auth.json",
     "~/.netrc",
     "~/.npmrc",
@@ -46,7 +47,7 @@ CREDENTIAL_FILES = (
 )
 # Credential stores that may be copied into a repository; every copy stays unreadable.
 PROJECT_STORE_DIRECTORIES = (".aws", ".gnupg", ".kube", ".ssh", ".config/BraveSoftware", ".config/chromium", ".local/share/keyrings", ".mozilla")
-PROJECT_STORE_FILES = (".claude/.credentials.json", ".codex/auth.json", ".config/gh/hosts.yml", ".docker/config.json", ".local/share/opencode/auth.json", ".bash_history", ".zsh_history")
+PROJECT_STORE_FILES = (".claude/.credentials.json", ".codex/auth.json", ".config/gh/hosts.yml", ".docker/config.json", ".hermes/config.yaml", ".local/share/opencode/auth.json", ".bash_history", ".zsh_history")
 PROJECT_STORES = (*PROJECT_STORE_DIRECTORIES, *PROJECT_STORE_FILES)
 # Standing read authorization is separate from OpenCode's external location asks.
 SYSTEM_READ_TREES = ("/usr", "/etc", "/opt", "/sys", "/var/lib/pacman")
@@ -488,7 +489,7 @@ for skill, script in (("commit", "commit-candidate"), ("commit", "commit-apply")
     require(os.access(ROOT / "agents/.agents/skills" / skill / "scripts" / script, os.X_OK), f"skill script missing or not executable: {skill}/scripts/{script}")
 require(os.access(ROOT / "templates/hooks/commit-gate", os.X_OK), "templates/hooks/commit-gate is missing or not executable")
 
-# The sync workflow maintains role-appropriate references for all three tools.
+# The sync workflow maintains role-appropriate references for every tool.
 references = {}
 for line in (ROOT / "references.txt").read_text(encoding="utf-8").splitlines():
     fields = line.split("#", 1)[0].split()
@@ -501,7 +502,8 @@ require(references == {
     "claude-code": "https://github.com/anthropics/claude-code.git",
     "codex": "https://github.com/openai/codex.git",
     "opencode": "https://github.com/anomalyco/opencode.git",
-}, "harness reference inventory differs from the reviewed three-tool set")
+    "hermes-agent": "https://github.com/NousResearch/hermes-agent.git",
+}, "harness reference inventory differs from the reviewed four-tool set")
 
 # Skills stay portable: the name matches the directory and only standard frontmatter fields appear.
 STANDARD_SKILL_FIELDS = {"name", "description", "license", "compatibility", "metadata", "allowed-tools"}

@@ -26,7 +26,7 @@ jobs:
     steps:
       - name: Prepare Arch userspace
         run: |
-          pacman -Syu --noconfirm --needed git make stow jq python nodejs shellcheck util-linux diffutils
+          pacman -Syu --noconfirm --needed git make stow jq python python-yaml nodejs shellcheck util-linux diffutils
           useradd --create-home --user-group --uid 1000 --shell /bin/bash ci
           install -d -o ci -g ci -m 700 /tmp/eyr-ci
       - uses: actions/checkout@v4

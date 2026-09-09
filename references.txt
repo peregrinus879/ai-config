@@ -6,3 +6,4 @@
 claude-code https://github.com/anthropics/claude-code.git
 codex https://github.com/openai/codex.git
 opencode https://github.com/anomalyco/opencode.git
+hermes-agent https://github.com/NousResearch/hermes-agent.git
