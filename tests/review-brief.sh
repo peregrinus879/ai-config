@@ -36,7 +36,9 @@ with tempfile.TemporaryDirectory(prefix="review-brief.", dir=os.environ.get("TMP
     for directory in (home, scratch, repo, outside):
         directory.mkdir(mode=0o700)
     env = {**os.environ, "HOME": str(home), "TMPDIR": str(work), "GIT_CONFIG_NOSYSTEM": "1",
-           "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_TERMINAL_PROMPT": "0"}
+           "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_TERMINAL_PROMPT": "0", "HISTFILE": str(home / "history"),
+           "XDG_CONFIG_HOME": str(home / "config"), "XDG_CACHE_HOME": str(home / "cache"),
+           "XDG_DATA_HOME": str(home / "data"), "XDG_STATE_HOME": str(home / "state")}
     for name in list(env):
         if name.startswith("GIT_") and name not in ("GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL", "GIT_TERMINAL_PROMPT"):
             del env[name]
@@ -48,15 +50,23 @@ with tempfile.TemporaryDirectory(prefix="review-brief.", dir=os.environ.get("TMP
 
     git("init", "-q")
     (repo / "a.txt").write_text("one\n")
+    blocked = repo / "blocked"
+    blocked.mkdir(mode=0o700)
+    blocked_source = blocked / "old.txt"
+    blocked_source.write_text("old tracked source\n")
     # Large unchanged binary and text sources must not inherit artifact limits.
     asset = repo / "image.bin"
     asset.write_bytes(bytes(range(256)) * 4096)
     document = repo / "large-doc.txt"
     document.write_text("ordinary documentation\n" * 40000)
     (repo / "Makefile").write_text(
-        "lint check:\n\t@if [ -n \"$$GATE_MARKER\" ]; then printf 'ran\\n' > \"$$GATE_MARKER\"; fi\n"
+        ".PHONY: shared lint check broken after-broken\n"
+        "shared:\n\t@if [ -n \"$$BATCH_MARKER\" ]; then printf 'shared\\n' >> \"$$BATCH_MARKER\"; fi\n"
+        "lint check: shared\n\t@if [ -n \"$$GATE_MARKER\" ]; then printf 'ran\\n' > \"$$GATE_MARKER\"; fi\n"
+        "\t@if [ -n \"$$BATCH_MARKER\" ]; then printf '%s\\n' '$@' >> \"$$BATCH_MARKER\"; fi\n"
         "\t@printf 'gate passed\\n'\n"
         "broken:\n\t@printf 'gate failed\\n'; exit 7\n"
+        "after-broken:\n\t@printf 'unexpected\\n' >> \"$$BATCH_MARKER\"\n"
         "mutate:\n\t@printf 'changed\\n' >> a.txt\n"
         "generate:\n\t@printf 'generated\\n' > generated.txt\n"
         "stage-empty:\n\t@git add intent-empty.py\n"
@@ -65,13 +75,14 @@ with tempfile.TemporaryDirectory(prefix="review-brief.", dir=os.environ.get("TMP
         "forbidden:\n\t@printf 'ran\\n' > \"$$GATE_MARKER\"\n"
         "leak:\n\t@printf '%s%s\\n' 'sk-' 'SYNTHETIC0123456789ABCDEF'; exit 1\n"
     )
-    git("add", "a.txt", "Makefile", "image.bin", "large-doc.txt")
+    git("add", "a.txt", "Makefile", "image.bin", "large-doc.txt", "blocked/old.txt")
     git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "first")
     (repo / "a.txt").write_text("one\ntwo\n")
     git("add", "a.txt")
     git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "second")
     (repo / "a.txt").write_text("one\ntwo\nthree\n")
     git("add", "a.txt")
+    (repo / ".git/info/exclude").write_text("/blocked/\n")
     intent = scratch / "intent.md"
     intent.write_text(intent_text)
     output = scratch / "brief.md"
@@ -126,9 +137,12 @@ with tempfile.TemporaryDirectory(prefix="review-brief.", dir=os.environ.get("TMP
     check(git("rev-parse", "HEAD").decode().strip() in text, "full HEAD missing")
     for part in ("index entries SHA-256", "tracked worktree SHA-256", "source-state SHA-256",
                  "### Before gates", "### After gates", "observed fingerprints unchanged",
-                 "conditional evidence only", "- lint: ok (make exit 0)", "- check: ok (make exit 0)",
-                 "-- lint`", "-- check`", "runtime/environment", "intent/checkpoint", "verified separately"):
+                 "conditional evidence only", "- combined gates: ok (make exit 0)",
+                 "-- lint check`", "runtime/environment", "intent/checkpoint", "verified separately",
+                 "raw index/worktree agreement: MATCH", "raw index/worktree mismatch count: 0"):
         check(part in text, "missing evidence: " + part)
+    check(text.count("- command:") == 1 and "- lint:" not in text and "- check:" not in text,
+          "default gates claimed separate invocations or target results")
     check("superset" not in text and "which equals" not in text, "brief overclaimed tree equality")
     check(snapshot() == before, "fingerprinting wrote Git objects/index/source")
     check(output.stat().st_size < 16384 and "diff --git a/image.bin" not in text
@@ -138,6 +152,99 @@ with tempfile.TemporaryDirectory(prefix="review-brief.", dir=os.environ.get("TMP
     check(accepted.returncode == 0, "new brief fails current outbound artifact API")
     cases += 1
     fresh()
+
+    # Shared phony prerequisites run once, and literal requested goal order survives.
+    batch_marker = scratch / "batch-marker"
+    for targets in (("lint", "check"), ("check", "lint", "check")):
+        arguments = [argument for target in targets for argument in ("--gate", target)]
+        text, _ = run(0, *arguments, overrides={"BATCH_MARKER": str(batch_marker)})
+        check(batch_marker.read_text().splitlines() == ["shared", *dict.fromkeys(targets)],
+              "gates repeated a shared prerequisite or reordered Make goals")
+        check(text.count("- command:") == 1 and "-- " + " ".join(targets) + "`" in text
+              and "no individual target results asserted" in text, "combined command misreported")
+        batch_marker.unlink()
+        fresh()
+        cases += 1
+    text, _ = run(1, "--gate", "lint", "--gate", "broken", "--gate", "after-broken",
+                  overrides={"BATCH_MARKER": str(batch_marker)})
+    check(batch_marker.read_text().splitlines() == ["shared", "lint"], "Make continued after failed goal")
+    check("-- lint broken after-broken`" in text and "combined gates: FAIL (make exit 2)" in text
+          and "- lint: ok" not in text and "- after-broken:" not in text, "combined failure fabricated target outcomes")
+    batch_marker.unlink()
+    fresh()
+    cases += 1
+
+    # Pass inherited controls into the collector, not just a scrubbed fixture Make.
+    before_controls = snapshot()
+    for name in ("MAKEFLAGS", "MFLAGS", "GNUMAKEFLAGS"):
+        for value in ("-n", "-i", "-k", "-j2", " "):
+            _, result = run(64, "--gate", "lint", "--gate", "broken", "--gate", "after-broken",
+                            overrides={name: value, "GATE_MARKER": str(marker), "BATCH_MARKER": str(batch_marker)})
+            check(b"nonempty inherited Make controls" in result.stderr and name.encode() in result.stderr
+                  and not output.exists() and not marker.exists() and not batch_marker.exists()
+                  and snapshot() == before_controls, "inherited Make controls ran recipes or claimed success")
+            cases += 1
+    inherited_makefile = scratch / "inherited.mk"
+    inherited_makefile.write_text("$(shell printf 'ran\\n' > \"$(GATE_MARKER)\")\n")
+    _, result = run(64, overrides={"MAKEFILES": str(inherited_makefile), "GATE_MARKER": str(marker)})
+    check(b"MAKEFILES" in result.stderr and not output.exists() and not marker.exists()
+          and snapshot() == before_controls, "inherited Makefile was parsed before refusal")
+    cases += 1
+    inherited_controls = {"MAKEFLAGS": "-n", "MFLAGS": "-i", "GNUMAKEFLAGS": "-j2",
+                          "MAKEFILES": str(inherited_makefile), "GATE_MARKER": str(marker)}
+    for skipped in ("--plan", "--no-gates"):
+        text, _ = run(0, skipped, overrides=inherited_controls)
+        check("skipped by " + skipped in text and not marker.exists() and snapshot() == before_controls,
+              "no-gate mode interpreted inherited Make controls")
+        fresh()
+        cases += 1
+    text, _ = run(0, "--gate", "lint", overrides={**dict.fromkeys(
+        ("MAKEFLAGS", "MFLAGS", "GNUMAKEFLAGS", "MAKEFILES"), ""), "GATE_MARKER": str(marker)})
+    check("combined gates: ok" in text and marker.exists() and "Makefile dependencies determine recipe order" in text,
+          "empty inherited controls refused or normal gate order was misrepresented")
+    marker.unlink()
+    fresh()
+    cases += 1
+
+    check(os.geteuid() != 0, "inaccessible-parent evidence requires a non-root test user")
+    git("rm", "--cached", "blocked/old.txt")
+    for present in (True, False):
+        if not present:
+            blocked_source.unlink()
+        before_blocked = snapshot()
+        blocked.chmod(0o000)
+        try:
+            try:
+                blocked_source.lstat()
+            except PermissionError:
+                pass
+            else:
+                raise AssertionError("fixture did not produce a real permission-denied lookup")
+            check(not os.path.lexists(blocked_source), "fixture did not reproduce lexists EACCES ambiguity")
+            _, result = run(3, "--no-gates")
+            check(not output.exists() and b"source path lookup failed; absence cannot be established" in result.stderr,
+                  "inaccessible staged deletion was treated as proved absence")
+            if present:
+                text, _ = run(0, "--plan", overrides=inherited_controls)
+                check("worktree observation: not collected" in text and not marker.exists(),
+                      "plan inspected inaccessible source or executed inherited Make controls")
+                fresh()
+                cases += 1
+        finally:
+            blocked.chmod(0o700)
+        check(snapshot() == before_blocked, "lookup refusal changed source or Git state")
+        if not present:
+            blocked_source.write_text("old tracked source\n")
+        cases += 1
+    git("restore", "--staged", "--", "blocked/old.txt")
+    blocked.chmod(0o000)
+    try:
+        _, result = run(3, "--no-gates")
+        check(not output.exists() and b"absence cannot be established" in result.stderr,
+              "inaccessible indexed source was treated as missing")
+    finally:
+        blocked.chmod(0o700)
+    cases += 1
 
     # No plan source opens, proved using a FIFO in place of a tracked asset.
     asset.unlink()
@@ -177,7 +284,7 @@ with tempfile.TemporaryDirectory(prefix="review-brief.", dir=os.environ.get("TMP
     text, result = run(1, "--gate", "lint", "--gate", "broken")
     for part in ("## Intent", intent_text.strip(), "## Repository state\n\n- head: ", " second", "## Gates",
                  "execution scope when run: working checkout, not an attestation of the index",
-                 "- lint: ok", "- broken: FAIL (make exit 2)", "gate failed", "reuse: disabled: failed gates",
+                 "-- lint broken`", "- combined gates: FAIL (make exit 2)", "gate failed", "reuse: disabled: failed gates",
                  "## Change: staged index against HEAD", "+three"):
         check(part in text, "failed gate diagnostic/evidence missing: " + part)
     check(result.stdout.startswith(b"brief: ") and result.stdout.endswith(b"staged index against HEAD)\n"),
@@ -294,8 +401,8 @@ with tempfile.TemporaryDirectory(prefix="review-brief.", dir=os.environ.get("TMP
           and "+three" not in text and "skipped by --no-gates" in text, "range included wrong tree or gate evidence")
     fresh()
     text, _ = run(1, "--worktree", "--gate", "lint", "--gate", "absent")
-    check("## Change: working tree against HEAD" in text and "+three" in text and "- lint: ok" in text
-          and "- absent: FAIL (make exit 2)" in text and "- check:" not in text,
+    check("## Change: working tree against HEAD" in text and "+three" in text and "-- lint absent`" in text
+          and "- combined gates: FAIL (make exit 2)" in text and "- check:" not in text,
           "worktree diff, explicit gate selection or missing-target failure wrong")
     fresh()
     cases += 2
@@ -340,8 +447,8 @@ with tempfile.TemporaryDirectory(prefix="review-brief.", dir=os.environ.get("TMP
     source.unlink()
     source.symlink_to("Makefile")
     text, _ = run(0, "--no-gates")
-    check("unattested symlink/gitlink count: 1" in text and "symlink targets or gitlink contents" in text,
-          "source symlink target treated as attested")
+    check("unattested tracked path count: 1" in text and "raw index/worktree agreement: MISMATCH" in text
+          and "symlink targets or gitlink contents" in text, "unstaged file-to-link type change treated as attested")
     fresh()
     source.unlink()
     source.write_bytes(saved)
@@ -357,14 +464,307 @@ with tempfile.TemporaryDirectory(prefix="review-brief.", dir=os.environ.get("TMP
     fresh()
     source.write_bytes(saved + b"hidden worktree change\n")
     changed, _ = run()
-    check(fingerprints(later) != fingerprints(changed), "assume-unchanged hid raw source content drift")
+    check(fingerprints(later) != fingerprints(changed) and "raw index/worktree agreement: MISMATCH" in changed
+          and "reuse: disabled" in changed, "assume-unchanged hid raw source content drift or mismatch")
     fresh()
     source.write_bytes(saved)
     git("update-index", "--no-assume-unchanged", "a.txt")
     cases += 2
+
+    # Raw comparison must not inherit clean-filter normalization or index flags.
+    attributes = repo / ".gitattributes"
+    attributes.write_text("a.txt filter=fixture\n")
+    git("config", "filter.fixture.clean", "printf 'one\\ntwo\\nthree\\n'")
+    git("add", attributes.name)
+    source.write_bytes(saved + b"hidden by clean filter\n")
+    git("diff", "--quiet", "--", "a.txt")
+    text, _ = run()
+    check("raw index/worktree agreement: MISMATCH" in text and "raw index/worktree mismatch count: 1" in text
+          and "reuse: disabled" in text, "clean filter hid raw index/worktree mismatch")
+    fresh()
+    cases += 1
+    for flag in ("assume-unchanged", "skip-worktree"):
+        git("update-index", "--" + flag, "a.txt")
+        text, _ = run()
+        check("raw index/worktree agreement: MISMATCH" in text, flag + " plus filter hid raw mismatch")
+        fresh()
+        source.write_bytes(saved)
+        text, _ = run()
+        check("raw index/worktree agreement: MATCH" in text, flag + " prevented actual raw agreement")
+        fresh()
+        source.write_bytes(saved + b"hidden by clean filter\n")
+        git("update-index", "--no-" + flag, "a.txt")
+        cases += 2
+    source.write_bytes(saved)
+    git("config", "--remove-section", "filter.fixture")
+    git("rm", "--cached", attributes.name)
+    attributes.unlink()
+
+    attributes.write_text("a.txt filter=sideeffect\n")
+    filter_marker = repo / ".git/filter-side-effect"
+    query_bin = work / "filter-query-bin"
+    query_bin.mkdir(mode=0o700)
+    query_marker = scratch / "filter-query-called"
+    query_shim = query_bin / "git"
+    query_shim.write_text("#!/usr/bin/python3 -I\nimport os, sys\nfrom pathlib import Path\n"
+                          "if sys.argv[1:3] == ['config', '--name-only']:\n"
+                          f"    Path({str(query_marker)!r}).write_text('query\\n')\n"
+                          "    print('fixture query error', file=sys.stderr)\n"
+                          "    sys.exit(int(os.environ['QUERY_STATUS']))\n"
+                          "os.execv('/usr/bin/git', ['git', *sys.argv[1:]])\n")
+    query_shim.chmod(0o700)
+    query_path = str(query_bin) + os.pathsep + env["PATH"]
+    config_target = outside / "config-pipe"
+    os.mkfifo(config_target)
+    (repo / "a.txt").write_bytes(saved + b"filter-triggering worktree change\n")
+    for driver, command in (("clean", "printf 'ran\\n' > .git/filter-side-effect; cat"),
+                            ("process", "printf 'ran\\n' > .git/filter-side-effect; exit 1")):
+        git("config", "filter.sideeffect." + driver, command)
+        before_filter = snapshot()
+        if driver == "clean":
+            # /dev/null is the reproduced config/diff source mismatch. The shim
+            # makes an accidental query of the FIFO fail promptly instead of hang.
+            for override, path in (("/dev/null", env["PATH"]), ("", env["PATH"]), (str(config_target), query_path)):
+                _, result = run(3, "--worktree", "--no-gates", overrides={"GIT_CONFIG": override,
+                                "PATH": path, "QUERY_STATUS": "2", "GATE_MARKER": str(marker)})
+                check(result.stderr == b"review-brief: worktree diff refused: GIT_CONFIG override is unsupported\n"
+                      and not query_marker.exists() and not output.exists() and not filter_marker.exists()
+                      and not marker.exists() and snapshot() == before_filter,
+                      "GIT_CONFIG override reached the query, diff, gates or an outside target")
+                cases += 1
+        for arguments in (("--worktree", "--no-gates"), ("--worktree",)):
+            _, result = run(3, *arguments, overrides={"GATE_MARKER": str(marker)})
+            check(b"configured Git clean/process filters" in result.stderr and command.encode() not in result.stderr
+                  and not output.exists() and not filter_marker.exists() and not marker.exists()
+                  and snapshot() == before_filter, "worktree collection executed a filter or ran gates before refusal")
+            cases += 1
+        for override in ((None, "/dev/null", "") if driver == "clean" else (None,)):
+            for arguments, change in ((("--staged", "--no-gates"), "+three"),
+                                      (("--range", "HEAD~1..HEAD", "--no-gates"), "+two"),
+                                      (("--plan",), "worktree observation: not collected")):
+                text, _ = run(0, *arguments, overrides={"GIT_CONFIG": override})
+                check(change in text and not filter_marker.exists() and snapshot() == before_filter,
+                      "filter refusal changed staged/range/plan semantics or executed a driver")
+                fresh()
+                cases += 1
+        git("config", "--remove-section", "filter.sideeffect")
+    config_target.unlink()
+    for driver in ("clean", "process"):
+        for name, value in (("sideeffect", ""), ("unused", ""), ("unused", "exit 99")):
+            git("config", "filter." + name + "." + driver, value)
+            before_filter = snapshot()
+            _, result = run(3, "--worktree", "--no-gates")
+            check(b"configured Git clean/process filters" in result.stderr and not output.exists()
+                  and not filter_marker.exists() and snapshot() == before_filter,
+                  "empty or unused filter key escaped conservative refusal")
+            git("config", "--remove-section", "filter." + name)
+            cases += 1
+    before_query = snapshot()
+    for status in (2, 128):
+        _, result = run(3, "--worktree", overrides={"PATH": query_path, "QUERY_STATUS": str(status),
+                                                  "GATE_MARKER": str(marker)})
+        check(result.stderr == b"review-brief: Git filter configuration query failed; worktree diff refused\n"
+              and query_marker.read_text() == "query\n" and not output.exists() and not filter_marker.exists()
+              and not marker.exists() and snapshot() == before_query,
+              "filter-query error was treated as no filters, exposed diagnostics or executed gates")
+        query_marker.unlink()
+        cases += 1
+    # Effective command-scope configuration is covered without reading its values
+    # or consulting untracked/global attributes to decide whether it is active.
+    _, result = run(3, "--worktree", "--no-gates", overrides={"GIT_CONFIG_COUNT": "1",
+                    "GIT_CONFIG_KEY_0": "filter.sideeffect.clean", "GIT_CONFIG_VALUE_0": "exit 99"})
+    check(b"configured Git clean/process filters" in result.stderr and not output.exists(),
+          "command-scope Git filter configuration escaped refusal")
+    cases += 1
+    (repo / "a.txt").write_bytes(saved)
+    attributes.unlink()
+
+    git("config", "core.filemode", "false")
+    source.chmod(0o755)
+    git("diff", "--quiet", "--", "a.txt")
+    text, _ = run()
+    check("raw index/worktree agreement: MISMATCH" in text and "bytes, modes or deletions do not agree" in text,
+          "core.filemode hid executable-mode mismatch")
+    fresh()
+    git("update-index", "--chmod=+x", "a.txt")
+    text, _ = run()
+    check("raw index/worktree agreement: MATCH" in text, "matching executable file mode refused")
+    fresh()
+    source.chmod(0o644)
+    text, _ = run()
+    check("raw index/worktree agreement: MISMATCH" in text, "staged executable mode change ignored")
+    fresh()
+    git("update-index", "--chmod=-x", "a.txt")
+    git("config", "core.filemode", "true")
+    cases += 3
+
+    # HEAD-only paths are still observed, including a deletion left in the checkout.
+    deleted = repo / "Makefile"
+    deleted_bytes = deleted.read_bytes()
+    git("rm", "--cached", deleted.name)
+    text, _ = run(0, "--no-gates")
+    check("raw index/worktree agreement: MISMATCH" in text and "untracked count: 1" in text,
+          "staged deletion left on disk was treated as raw agreement")
+    fresh()
+    deleted.unlink()
+    later, _ = run(0, "--no-gates")
+    check("raw index/worktree agreement: MATCH" in later and fingerprints(text) != fingerprints(later),
+          "absent staged deletion not covered by source evidence")
+    fresh()
+    os.mkfifo(deleted)
+    text, _ = run(0, "--no-gates")
+    check("raw index/worktree agreement: MISMATCH" in text and "not now-untracked contents" in text,
+          "staged deletion opened a now-untracked source instead of checking presence")
+    fresh()
+    deleted.unlink()
+    git("restore", "--staged", "--", deleted.name)
+    text, _ = run(0, "--no-gates")
+    check("raw index/worktree agreement: MISMATCH" in text, "missing indexed source was treated as agreement")
+    fresh()
+    deleted.write_bytes(deleted_bytes)
+    cases += 4
+
+    # Target evidence comes from the raw manifest/index comparison, not link names.
+    nested = repo / "nested"
+    nested.mkdir()
+    links = [repo / "tracked-link", nested / "relative-link", repo / "binary-link"]
+    for link, target in zip(links, ("a.txt", "../a.txt", "image.bin")):
+        link.symlink_to(target)
+        git("add", str(link.relative_to(repo)))
+    before_links = snapshot()
+    text, _ = run()
+    check("raw index/worktree agreement: MATCH" in text and "attested internal tracked file-symlink count: 3" in text
+          and "unattested tracked path count: 0" in text and "conditional evidence only" in text,
+          "safe tracked file targets did not use collected raw evidence")
+    check(snapshot() == before_links, "symlink attestation wrote source/index/Git objects")
+    fresh()
+    links[0].unlink()
+    links[0].symlink_to("./a.txt")
+    text, _ = run()
+    check("raw index/worktree agreement: MISMATCH" in text and "attested internal tracked file-symlink count: 2" in text,
+          "equivalent target name hid raw link-byte mismatch")
+    fresh()
+    links[0].unlink()
+    links[0].symlink_to("a.txt")
+    source.write_bytes(saved + b"target drift\n")
+    text, _ = run()
+    check("raw index/worktree agreement: MISMATCH" in text and "attested internal tracked file-symlink count: 1" in text
+          and "unattested tracked path count: 2" in text, "changed tracked target bytes were guessed from link names")
+    fresh()
+    source.write_bytes(saved)
+    text, _ = run(1, "--gate", "mutate")
+    check("source-state comparison: CHANGED" in text and "reuse: disabled" in text
+          and "attested internal tracked file-symlink count: 3" in text
+          and "attested internal tracked file-symlink count: 1" in text, "target drift during gates stayed reusable")
+    fresh()
+    source.write_bytes(saved)
+    for link in links:
+        git("rm", "--cached", str(link.relative_to(repo)))
+        link.unlink()
+    cases += 4
+
+    # These targets must never be opened. FIFOs make accidental reads fail/hang.
+    target = repo / "untracked-target"
+    external_target = outside / "external-target"
+    os.mkfifo(target)
+    os.mkfifo(external_target)
+    unsafe_link = repo / "unattested-link"
+    chain = repo / "untracked-chain"
+    chain.symlink_to("a.txt")
+    directory_chain = repo / "untracked-directory-chain"
+    directory_chain.symlink_to("nested", target_is_directory=True)
+    for destination in (target.name, str(external_target), "nested", chain.name, "a.txt/", "a.txt/.",
+                        directory_chain.name + "/../a.txt"):
+        unsafe_link.symlink_to(destination)
+        git("add", unsafe_link.name)
+        text, _ = run()
+        check("raw index/worktree agreement: UNATTESTED" in text and "attested internal tracked file-symlink count: 0" in text
+              and "unattested tracked path count: 1" in text and "reuse: disabled" in text,
+              "unsupported target was opened or attested: " + destination)
+        fresh()
+        unsafe_link.unlink()
+        cases += 1
+    unsafe_link.symlink_to("/proc/eyragents-review-brief-missing")
+    git("add", unsafe_link.name)
+    run(2, "--no-gates")
+    check(not output.exists(), "external target escaped path refusal")
+    git("rm", "--cached", unsafe_link.name)
+    unsafe_link.unlink()
+    target.unlink()
+    external_target.unlink()
+    chain.unlink()
+    directory_chain.unlink()
+    nested.rmdir()
+    cases += 1
+
+    # A tracked path reached through a directory alias must not read its contents.
+    alias_dir = repo / "alias-dir"
+    alias_dir.mkdir()
+    alias_source = alias_dir / "source"
+    alias_source.write_text("ordinary fixture\n")
+    git("add", "alias-dir/source")
+    alias_source.unlink()
+    alias_dir.rmdir()
+    alias_dir.symlink_to(outside, target_is_directory=True)
+    os.mkfifo(outside / "source")
+    text, _ = run(0, "--no-gates")
+    check("raw index/worktree agreement: UNATTESTED" in text and "unattested tracked path count: 1" in text,
+          "directory alias opened a non-source target")
+    fresh()
+    git("restore", "--staged", "--", "alias-dir/source")
+    alias_dir.unlink()
+    (outside / "source").unlink()
+    cases += 1
+
+    git("update-index", "--add", "--cacheinfo", "160000", git("rev-parse", "HEAD").decode().strip(), "module")
+    text, _ = run()
+    check("raw index/worktree agreement: UNATTESTED" in text and "unattested tracked path count: 1" in text,
+          "missing gitlink was treated as raw agreement")
+    fresh()
+    os.mkfifo(repo / "module")
+    text, _ = run(0, "--no-gates")
+    check("raw index/worktree agreement: UNATTESTED" in text, "gitlink replacement contents were opened")
+    fresh()
+    (repo / "module").unlink()
+    git("rm", "--cached", "module")
+    cases += 2
+
+    # Ignored content is never hashed, and is never inferred from equal endpoints.
+    limits_ignore = repo / ".gitignore"
+    limits_ignore.write_text("/ignored-input\n")
+    git("add", limits_ignore.name)
+    ignored_input = repo / "ignored-input"
+    ignored_input.write_text("first ignored input\n")
+    text, _ = run()
+    fresh()
+    ignored_input.write_text("changed ignored input\n")
+    later, _ = run()
+    check(fingerprints(text) == fingerprints(later) and "untracked count: 0" in text
+          and "Ignored files, dependencies, runtime/environment, Git configuration and host inputs are not attested" in text
+          and "Unknown changes forbid reuse" in text and "not a concurrency lock" in text,
+          "ignored-input or runtime limits not explicit")
+    fresh()
+    ignored_input.unlink()
+    os.mkfifo(ignored_input)
+    unsafe_link.symlink_to(ignored_input.name)
+    git("add", unsafe_link.name)
+    text, _ = run()
+    check("raw index/worktree agreement: UNATTESTED" in text and "untracked count: 0" in text,
+          "ignored symlink target was opened or attested")
+    fresh()
+    git("rm", "--cached", unsafe_link.name, limits_ignore.name)
+    unsafe_link.unlink()
+    limits_ignore.unlink()
+    ignored_input.unlink()
+    cases += 2
+
     empty = repo / "intent-empty.py"
     empty.write_text("")
     git("add", "--intent-to-add", empty.name)
+    text, _ = run(0, "--no-gates")
+    check("raw index/worktree agreement: UNATTESTED" in text, "empty intent-to-add fabricated indexed raw agreement")
+    fresh()
+    cases += 1
     entries, flags = git("ls-files", "--stage", "-z"), git("ls-files", "-v", "-z")
     text, _ = run(1, "--gate", "stage-empty")
     check(entries == git("ls-files", "--stage", "-z") and flags == git("ls-files", "-v", "-z"),
@@ -375,11 +775,45 @@ with tempfile.TemporaryDirectory(prefix="review-brief.", dir=os.environ.get("TMP
     git("rm", "--cached", empty.name)
     empty.unlink()
     cases += 1
+    git("rm", "--cached", source.name)
+    source.write_bytes(b"")
+    git("add", "--intent-to-add", source.name)
+    text, _ = run(0, "--no-gates")
+    check("raw index/worktree agreement: UNATTESTED" in text,
+          "intent-to-add replacing an old HEAD path fabricated raw agreement")
+    fresh()
+    source.write_bytes(saved)
+    git("add", source.name)
+    cases += 1
     git("restore", "--staged", "a.txt")
     _, result = run(3, "--no-gates")
     check(not output.exists() and b"nothing is staged" in result.stderr, "empty staged change accepted")
     git("add", "a.txt")
     cases += 1
+
+    # Git's checked storage format, not an implicit SHA-1, owns raw blob IDs.
+    sha_repo = work / "sha256-repo"
+    sha_repo.mkdir(mode=0o700)
+    subprocess.run(["git", "init", "-q", "--object-format=sha256", str(sha_repo)], env=env, check=True)
+    (sha_repo / "source.txt").write_text("first\n")
+    subprocess.run(["git", "add", "source.txt"], cwd=sha_repo, env=env, check=True)
+    subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "first"],
+                   cwd=sha_repo, env=env, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    (sha_repo / "source.txt").write_text("second\n")
+    (sha_repo / "file-link").symlink_to("source.txt")
+    subprocess.run(["git", "add", "source.txt", "file-link"], cwd=sha_repo, env=env, check=True)
+    before_sha = snapshot(sha_repo)
+    text, _ = run(0, "--no-gates", cwd=sha_repo)
+    check("Git storage object format: sha256" in text and "raw index/worktree agreement: MATCH" in text
+          and "attested internal tracked file-symlink count: 1" in text and snapshot(sha_repo) == before_sha,
+          "SHA-256 raw agreement failed or wrote Git/source state")
+    fresh()
+    (sha_repo / "source.txt").write_text("raw mismatch\n")
+    text, _ = run(0, "--no-gates", cwd=sha_repo)
+    check("raw index/worktree agreement: MISMATCH" in text and "attested internal tracked file-symlink count: 0" in text,
+          "SHA-256 raw mismatch was missed")
+    fresh()
+    cases += 2
 
     # Repository output remains supported outside plan mode, but cannot attest
     # an unchanged tree after creating itself. Relative paths use caller cwd.
@@ -588,9 +1022,14 @@ with tempfile.TemporaryDirectory(prefix="review-brief.", dir=os.environ.get("TMP
     # Change modes remain conservative: no attempt to prove secret-byte equality.
     sensitive.write_text("ordinary synthetic fixture\n")
     git("add", ".env")
+    first_source = repo / ".aaa-source"
+    git("update-index", "--add", "--cacheinfo", "100644", git("rev-parse", "HEAD:a.txt").decode().strip(), first_source.name)
+    os.mkfifo(first_source)
     _, result = run(2, "--no-gates")
     check(not output.exists() and b"before content access" in result.stderr,
-          "newly staged sensitive source reached patch inclusion")
+          "source read preceded full sensitive-path preflight")
+    git("restore", "--staged", "--", first_source.name)
+    first_source.unlink()
     cases += 1
     git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "synthetic path fixture")
     source.write_bytes(saved + b"four\n")
@@ -603,6 +1042,14 @@ with tempfile.TemporaryDirectory(prefix="review-brief.", dir=os.environ.get("TMP
     check(not output.exists() and b"before content access" in result.stderr,
           "change review attempted to read inherited sensitive source")
     cases += 2
+    git("rm", "--cached", sensitive.name)
+    sensitive.unlink()
+    _, result = run(2, "--no-gates")
+    check(not output.exists() and b"before content access" in result.stderr,
+          "old HEAD-only sensitive path escaped preflight after staged deletion")
+    sensitive.write_text("ordinary synthetic fixture\n")
+    git("add", sensitive.name)
+    cases += 1
     sensitive.write_text("changed synthetic fixture\n")
     git("add", ".env")
     _, result = run(2, "--no-gates")

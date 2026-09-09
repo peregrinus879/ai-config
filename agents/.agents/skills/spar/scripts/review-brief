@@ -10,6 +10,13 @@
 # Fingerprints are read-only observations, not Git trees or runtime attestations.
 # Plan mode observes HEAD/index only, never source contents. Change modes stream
 # safe source hashes without artifact-size limits; sensitive source paths refuse.
+# Raw Git blob IDs/modes are compared with the index, without clean filters. Only
+# internal tracked regular-file link targets with matching raw evidence attest.
+# Gates preserve requested Make argument order, not recipe order, with one combined
+# result. Nonempty inherited MAKEFLAGS/MFLAGS/GNUMAKEFLAGS/MAKEFILES refuse gates.
+# Worktree diffs refuse configured clean/process filters before diff execution;
+# staged/range diffs do not run worktree filters. Only ENOENT proves source absence.
+# Worktree mode refuses GIT_CONFIG even when empty: it redirects config, not diff.
 # Exit: 0 artifact written (may be explicitly unverified), 1 diagnostic artifact
 # retained for failed gates/source drift, 2 scanner/path refusal (no new artifact),
 # 3 repository/IO refusal, 64 usage/conflicts or existing output. No Git writes.
@@ -66,6 +73,12 @@ def main():
         fail("--gate conflicts with --no-gates and --plan", 64)
     if any(not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_./-]*", target) for target in args.gate):
         fail("--gate requires a literal make target, not an option or assignment", 64)
+    if not (args.plan or args.no_gates):
+        controls = [name for name in ("MAKEFLAGS", "MFLAGS", "GNUMAKEFLAGS", "MAKEFILES") if os.environ.get(name)]
+        if controls:
+            fail("gate execution refuses nonempty inherited Make controls: " + ", ".join(controls), 64)
+    if args.worktree and "GIT_CONFIG" in os.environ:
+        fail("worktree diff refused: GIT_CONFIG override is unsupported")
     intent, out = os.path.abspath(args.intent), os.path.abspath(args.out)
     out_lexical = out
     root = os.fsdecode(git("rev-parse", "--show-toplevel")).rstrip("\n")
@@ -153,7 +166,7 @@ def main():
         entries = git("ls-files", "--stage", "-z")
         flags = git("ls-files", "-v", "-z")
         # Raw cached scope distinguishes intent-to-add without reading worktree bytes.
-        scope = git("diff", "--cached", "--raw", "--no-renames", "--no-ext-diff", "--no-textconv", "-z", head)
+        scope = git("diff", "--cached", "--raw", "--ita-invisible-in-index", "--no-renames", "--no-ext-diff", "--no-textconv", "-z", head)
         state = {
             "HEAD": head,
             "index entries SHA-256": digest(entries + b"\0flags\0" + flags + b"\0scope\0" + scope),
@@ -161,23 +174,60 @@ def main():
         if args.plan:
             state["worktree observation"] = "not collected (--plan; no source-content reads)"
             return state
-        tracked = set(git("ls-files", "--cached", "-z").split(b"\0")[:-1])
-        tracked.update(git("ls-tree", "-r", "--name-only", "-z", head).split(b"\0")[:-1])
-        names = sorted(tracked)
+        object_format = git("rev-parse", "--show-object-format=storage").decode().strip()
+        if object_format not in ("sha1", "sha256"):
+            fail("unsupported Git storage object format")
+        indexed = {}
+        for entry in entries.split(b"\0")[:-1]:
+            metadata, name = entry.split(b"\t", 1)
+            mode, oid, stage = metadata.decode().split()
+            if (mode not in ("100644", "100755", "120000", "160000") or stage not in ("0", "1", "2", "3")
+                    or not re.fullmatch("[0-9a-f]{" + str(hashlib.new(object_format).digest_size * 2) + "}", oid)):
+                fail("unsupported index entry metadata")
+            indexed.setdefault(name, []).append((mode, oid, stage))
+        head_names = set(git("ls-tree", "-r", "--name-only", "-z", head).split(b"\0")[:-1])
+        names = sorted(set(indexed) | head_names)
+        # Cached raw metadata/path pairs hide intent-to-add as either an absent
+        # addition or a deletion of an old HEAD path, even for empty raw files.
+        records = scope.split(b"\0")[:-1]
+        staged_modes = {records[i + 1]: records[i].split()[1] for i in range(0, len(records), 2)}
         for name in names:
             path_preflight(os.fsdecode(name))
-        manifest, unsupported = [], 0
+        manifest, observed, links, unattested = [], {}, {}, set()
         for name in names:
             path = os.fsdecode(name)
             resolved = path_preflight(path)
-            if not os.path.lexists(path):
+            if any(entry[0] == "160000" for entry in indexed.get(name, [])):
+                manifest.append([path, "gitlink"])
+                unattested.add(name)
+                continue
+            if os.path.realpath(os.path.dirname(os.path.abspath(path))) != os.path.dirname(os.path.abspath(path)):
+                manifest.append([path, "unattested parent alias", resolved])
+                unattested.add(name)
+                continue
+            try:
+                path_metadata = os.lstat(path)
+            except FileNotFoundError:
+                path_metadata = None
+            except OSError:
+                fail("source path lookup failed; absence cannot be established")
+            if path_metadata is None:
                 item = [path, "missing"]
-            elif os.path.islink(path):
-                item = [path, "symlink", os.readlink(path)]
-                unsupported += 1  # Link targets are not recursively attested.
-            elif os.path.isdir(path):
+                observed[name] = None
+            elif name not in indexed:
+                # A staged deletion requires absence, not reads of now-untracked bytes.
+                item = [path, "HEAD-only path present", stat.S_IMODE(path_metadata.st_mode)]
+                observed[name] = "present"
+            elif stat.S_ISLNK(path_metadata.st_mode):
+                target = os.readlink(path)
+                raw = os.fsencode(target)
+                oid = hashlib.new(object_format, b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+                observed[name] = ("120000", oid, "0")
+                links[name] = (os.path.join(os.path.dirname(os.path.abspath(path)), target), resolved)
+                item = [path, "symlink", target]
+            elif stat.S_ISDIR(path_metadata.st_mode):
                 item = [path, "directory/gitlink"]
-                unsupported += 1
+                unattested.add(name)
             else:
                 # Match scanner file safety, not its outbound artifact byte cap.
                 # Hash raw source in fixed-size chunks, including binary assets.
@@ -192,24 +242,58 @@ def main():
                     if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_nlink != 1:
                         fail("tracked source is not a single-link regular file owned by the current user", 2)
                     source_hash = hashlib.sha256()
+                    blob_hash = hashlib.new(object_format, b"blob " + str(metadata.st_size).encode() + b"\0")
                     while chunk := stream.read(128 * 1024):
                         source_hash.update(chunk)
+                        blob_hash.update(chunk)
                 item = [path, stat.S_IMODE(metadata.st_mode), source_hash.hexdigest()]
-                unsupported += os.path.abspath(path) != resolved
+                observed[name] = ("100755" if metadata.st_mode & stat.S_IXUSR else "100644", blob_hash.hexdigest(), "0")
             manifest.append(item)
+        mismatched, matched = set(), set()
+        for name in names:
+            expected = indexed.get(name, [])
+            if (len(expected) > 1 or (expected and (expected[0][0] == "160000" or expected[0][2] != "0"
+                                                  or staged_modes.get(name) == b"000000"
+                                                  or (name not in head_names and name not in staged_modes)))):
+                unattested.add(name)
+            elif name not in unattested:
+                if observed[name] == (expected[0] if expected else None):
+                    matched.add(name)
+                else:
+                    mismatched.add(name)
+        attested_links = 0
+        for name, (target, resolved) in links.items():
+            target_name = os.fsencode(os.path.relpath(target, root))
+            safe_target = (os.path.abspath(target) == resolved and resolved.startswith(root + "/")
+                           and target_name in matched and target_name in indexed
+                           and indexed[target_name][0][0] in ("100644", "100755") and name in matched)
+            if safe_target:
+                # Check unnormalized parents too: alias/../file can resolve to a
+                # tracked file while hiding an untracked directory-link dependency.
+                parent = os.path.dirname(target)
+                while parent != root and parent != os.path.dirname(parent):
+                    if os.path.islink(parent):
+                        safe_target = False
+                        break
+                    parent = os.path.dirname(parent)
+            if safe_target and os.path.isfile(os.fsdecode(name)):
+                attested_links += 1
+            else:
+                unattested.add(name)
         untracked = git("ls-files", "--others", "--exclude-standard", "-z")
         state.update({
+            "Git storage object format": object_format,
             "tracked worktree SHA-256": digest(json.dumps(manifest, ensure_ascii=True).encode()),
+            "raw index/worktree agreement": "MISMATCH" if mismatched else "UNATTESTED" if unattested else "MATCH",
+            "raw index/worktree mismatch count": len(mismatched),
+            "attested internal tracked file-symlink count": attested_links,
+            "unattested tracked path count": len(unattested),
             "untracked names SHA-256 (not contents)": digest(untracked),
             "untracked count": untracked.count(b"\0"),
-            "unattested symlink/gitlink count": unsupported,
         })
         state["source-state SHA-256"] = digest(json.dumps(state, sort_keys=True).encode())
         return state
 
-    before = source_state()
-    head_line = git("log", "-1", "--format=%H %s").decode().strip()
-    branch = git("rev-parse", "--abbrev-ref", "HEAD").decode().strip()
     mode = "plan" if args.plan else "range" if args.range else "worktree" if args.worktree else "staged"
     log, diff, change_stat = "", b"", b""
     if args.range:
@@ -226,12 +310,26 @@ def main():
             fail("no commits in range")
         compare = [base, tip]
         title = "commits " + args.range
-    elif mode == "staged":
+    before = source_state()
+    head_line = git("log", "-1", "--format=%H %s").decode().strip()
+    branch = git("rev-parse", "--abbrev-ref", "HEAD").decode().strip()
+    if mode == "staged":
         compare, title = ["--cached", before["HEAD"]], "staged index against HEAD"
     elif mode == "worktree":
         compare, title = [before["HEAD"]], "working tree against HEAD"
-    else:
+    elif mode == "plan":
         compare, title = [], "none, plan review"
+    if mode == "worktree":
+        # Inspect keys from Git's already-effective configuration, not attributes,
+        # command values or external targets. No clean/process driver is executed.
+        filters = subprocess.run(
+            ["git", "config", "--name-only", "--get-regexp", r"^filter\..*\.(clean|process)$"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+        )
+        if filters.returncode == 0:
+            fail("worktree diff refused: configured Git clean/process filters may execute during collection; use --staged or --range")
+        if filters.returncode != 1:
+            fail("Git filter configuration query failed; worktree diff refused")
     if mode != "plan":
         options = ["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--ignore-submodules=dirty", "--submodule=short"]
         diff = git(*options, *compare, "--")
@@ -245,16 +343,16 @@ def main():
     if skipped:
         gates.append("- gates: unverified, skipped by " + ("--no-gates" if args.no_gates else "--plan (read-only)"))
     else:
-        for target in args.gate or ["lint", "check"]:
-            command = ["make", "--no-print-directory", "-C", root, "--", target]
-            result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-            failed |= result.returncode != 0
-            gates += ["- command: `" + shlex.join(command) + "`",
-                      f"- {target}: {'ok' if result.returncode == 0 else 'FAIL'} (make exit {result.returncode})"]
-            if result.returncode:
-                output = scan["decode_text"]("gate output", result.stdout)
-                scan["enforce"](scan["content_findings"]("gate output", output, True))
-                gates.append("Last 20 output lines:\n```\n" + "\n".join(output.splitlines()[-20:]) + "\n```")
+        command = ["make", "--no-print-directory", "-C", root, "--", *(args.gate or ["lint", "check"])]
+        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        failed = result.returncode != 0
+        gates += ["- command: `" + shlex.join(command) + "`",
+                  f"- combined gates: {'FAIL' if failed else 'ok'} (make exit {result.returncode}); no individual target results asserted",
+                  "- ordering: requested goal arguments preserved; Makefile dependencies determine recipe order"]
+        if failed:
+            output = scan["decode_text"]("gate output", result.stdout)
+            scan["enforce"](scan["content_findings"]("gate output", output, True))
+            gates.append("Last 20 output lines:\n```\n" + "\n".join(output.splitlines()[-20:]) + "\n```")
     after = source_state()
     changed = before != after
     reasons = []
@@ -266,8 +364,10 @@ def main():
         reasons.append("repository metadata changed during plan collection" if args.plan else "source-state changed during collection/gates")
     if before.get("untracked count", 0) or after.get("untracked count", 0):
         reasons.append("Git-visible untracked contents were not read or hashed")
-    if before.get("unattested symlink/gitlink count", 0) or after.get("unattested symlink/gitlink count", 0):
-        reasons.append("symlink targets or gitlink contents are not attested")
+    if before.get("raw index/worktree mismatch count", 0) or after.get("raw index/worktree mismatch count", 0):
+        reasons.append("raw index/worktree bytes, modes or deletions do not agree")
+    if before.get("unattested tracked path count", 0) or after.get("unattested tracked path count", 0):
+        reasons.append("unsupported tracked paths, index entries, symlink targets or gitlink contents are not attested")
     if in_repo:
         reasons.append("output creates a repository file after these observations")
     reuse = "disabled: " + "; ".join(reasons) if reasons else "conditional evidence only, not automatic reuse"
@@ -279,8 +379,15 @@ def main():
         "untracked names/contents and symlink/gitlink contents were not collected. No source-state "
         "or worktree digest is asserted, and no gate evidence or reuse is available."
         if args.plan else
-        "Fingerprint scope: SHA-256 of read-only index entries/flags and streamed raw tracked file bytes/modes, "
-        "missing paths and link names. Untracked names/counts are recorded, NOT their contents; "
+        "Fingerprint scope: SHA-256 of read-only index entries/flags and streamed raw indexed worktree file bytes/modes, "
+        "missing paths and link names; HEAD-only paths record presence/mode, not now-untracked contents. "
+        "Raw index/worktree agreement compares Git blob IDs computed from "
+        "actual raw bytes (using the checked Git storage hash algorithm) and Git file modes with stage-0 entries, "
+        "including absence of HEAD-only deleted paths. The raw comparison uses no clean filters or index stat/flag shortcuts. "
+        "Internal tracked file symlinks attest only when both link bytes/mode and their direct regular-file "
+        "target's collected bytes/mode match the index; external, untracked, directory and chained targets "
+        "remain unattested or refuse. Unmerged and intent-to-add entries are unsupported. "
+        "Untracked names/counts are recorded, NOT their contents; "
         "tracked equality never covers untracked inputs. Sensitive tracked source paths refuse before reads, "
         "even if apparently unchanged; this brief does not infer their content equality."
     )
