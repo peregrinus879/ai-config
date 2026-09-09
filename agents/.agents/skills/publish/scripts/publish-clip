@@ -1,13 +1,22 @@
 #!/usr/bin/env bash
-# publish-clip - put the push command on the host clipboard and say which tool took it.
+# publish-clip --copy - copy a reviewed command only after H requests it.
 #
-# Reads the command on stdin and tries, in order, wl-copy under a Wayland
-# session (Omarchy), clip.exe through Windows interop (WSL), then xclip or xsel
-# under X11. Prints `clipboard: <tool>` when one took the text, or
-# `clipboard: none`, and always exits 0: the packet repeats that line, so H
-# knows whether a paste yields the command or whatever the clipboard held
-# before, and the message carries the command either way.
+# Without --copy, leave both stdin and the clipboard untouched. With --copy,
+# read command text on stdin (without trailing newlines) and try, in order,
+# wl-copy under Wayland (Omarchy), clip.exe through Windows interop (WSL), then
+# xclip or xsel under X11. Report this attempt, not the clipboard's later state.
+# --copy is an explicit CLI action, not independent proof of a human selection;
+# the publish skill requires H's Copy push command choice before invoking it.
 set -euo pipefail
+
+if (($# == 0)); then
+  printf 'clipboard: unchanged (copy not requested)\n'
+  exit 0
+fi
+if [[ $# != 1 || $1 != --copy ]]; then
+  printf 'usage: publish-clip --copy < reviewed-command-file\n' >&2
+  exit 64
+fi
 
 text=$(cat)
 if [[ -z $text ]]; then

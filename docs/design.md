@@ -8,9 +8,9 @@ H supplies direction, not an exhaustive specification. Shared guidance's [Approa
 
 Broad reasoning does not authorize broad action. Surface useful omissions and material tradeoffs for H, while well-supported low-risk work proceeds within scope. Likewise, a command that relieves one symptom is not a durable fix when the workflow will require it repeatedly; explain that distinction and the underlying remedy. Keep the analysis proportionate rather than adding a mandatory essay or another approval ritual to trivial work.
 
-## Two interventions
+## Two approval boundaries
 
-The normal trusted-repository workflow has two human boundaries: approving one exact staged candidate, and running the reviewed push command. Ordinary edits remain autonomous; ambiguous, destructive, or unsupported operations still stop for H. A request spanning repositories presents their push commands together without merging repository ownership.
+The normal trusted-repository workflow has two approval/publication boundaries: approving one exact staged candidate, and running the reviewed push command. Full packets stay in visible chat, followed by short selectors. Optional `Copy push command` is a convenience action, not approval or confirmation: it triggers one `publish-clip --copy` call and returns to the selector, without automatic copying on preparation or re-display. Ordinary edits remain autonomous; ambiguous, destructive or unsupported operations still stop for H. Multi-repository requests present their pushes together without merging ownership.
 
 Immutable candidate and publication receipts make those boundaries explicit rather than relying on a replaceable latest record. SHA-256 IDs bind the exact candidate or destination scope, while lifecycle status changes separately. Prepared-index recording preserves mixed hunks; whole-file staging is an explicit `--stage` choice. Apply uses a disposable index with normal hooks and checks the resulting commit. Compensation may compare-and-swap only its uniquely identified created commit back to the recorded sole parent; unexplained branch or checkout movement is preserved for H, never reset. Private permissions and cooperating-operation locks support governance, not same-user isolation. A receipt is neither approval nor evidence that worktree gates tested a different index tree.
 
